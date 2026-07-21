@@ -1,6 +1,7 @@
 # PawPal+ (Module 2 Project)
 
-You are building **PawPal+**, a Streamlit app that helps a pet owner plan care tasks for their pet.
+## Summary
+PawPal+ is a smart pet care management system. Where users can stay consistent on tracking pet care tasks such as walking, grooming, feeding time, and medication. Users are able to input their day/time availability, the duration for each task, and setting priorites. When the user fills out their info on their end then the system will generate a build schedule plan for the day. The schedule plan feature will construct a smooth and efficient schedule based on the timing, availability, and priorities. One new feature that is implemented is a Pet documentation (Retrieval only), where users submit any aftercare documentation and the user are able to ask any questions that are related to the documentation. The system will provide accurate information based on the user's question.       
 
 ## Context
 
@@ -46,9 +47,13 @@ pytest
 pytest --cov
 ```
 
-Sample test output:
+Sample test output (original):
 
 <img width="813" height="137" alt="Screenshot 2026-06-22 at 9 51 59 PM" src="https://github.com/user-attachments/assets/1f62d3e7-7b7c-4bf4-8929-cfe59d643e39" />
+
+(Updated Version):
+
+<img width="917" height="127" alt="Screenshot 2026-07-21 at 1 56 18 PM" src="https://github.com/user-attachments/assets/5aae4943-a6c4-4e95-96bc-fc1aec824f32" />
 
 
 ## 📐 Smarter Scheduling
