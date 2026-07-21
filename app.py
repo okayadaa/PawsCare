@@ -1,10 +1,13 @@
 from datetime import date, time
 
 import streamlit as st
+from pathlib import Path
+
 from pawpal_system import (
     DAY_PRESETS,
     AvailabilityError,
     AvailabilityWindow,
+    DocSearchIndex,
     Owner,
     PetInfo,
     ScheduleConflictError,
@@ -12,8 +15,22 @@ from pawpal_system import (
     ToDo,
     WEEKDAYS,
     format_time,
+    load_aftercare_sections,
     parse_task_time,
 )
+
+DOCS_DIR = Path(__file__).resolve().parent / "docs"
+
+
+def _docs_cache_key(docs_dir: Path) -> str:
+    return str(
+        sorted((path.name, path.stat().st_mtime) for path in docs_dir.glob("*.md"))
+    )
+
+
+@st.cache_data
+def _cached_doc_index(docs_dir: str, _cache_key: str) -> DocSearchIndex:
+    return DocSearchIndex.build(load_aftercare_sections(docs_dir))
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
@@ -57,34 +74,9 @@ st.title("🐾 PawPal+")
 st.markdown(
     """
 Welcome to the PawPal+ starter app.
-
-This file is intentionally thin. It gives you a working Streamlit app so you can start quickly,
-but **it does not implement the project logic**. Your job is to design the system and build it.
-
-Use this app as your interactive demo once your backend classes/functions exist.
 """
 )
 
-with st.expander("Scenario", expanded=True):
-    st.markdown(
-        """
-**PawPal+** is a pet care planning assistant. It helps a pet owner plan care tasks
-for their pet(s) based on constraints like time, priority, and preferences.
-
-You will design and implement the scheduling logic and connect it to this Streamlit UI.
-"""
-    )
-
-with st.expander("What you need to build", expanded=True):
-    st.markdown(
-        """
-At minimum, your system should:
-- Represent pet care tasks (what needs to happen, how long it takes, priority)
-- Represent the pet and the owner (basic info and preferences)
-- Build a plan/schedule for a day that chooses and orders tasks based on constraints
-- Explain the plan (why each task was chosen and when it happens)
-"""
-    )
 
 st.divider()
 
@@ -165,7 +157,6 @@ else:
     with task_col2:
         duration = st.number_input("Duration (minutes)", min_value=1, max_value=240, value=20)
         priority = st.selectbox("Priority", ["low", "medium", "high"], index=2)
-        recurring = st.checkbox("Recurring task", value=False)
 
     selected_pet = owner.pets[task_pet_index]
 
@@ -176,7 +167,6 @@ else:
             int(duration),
             availability,
             selected_pet,
-            recurring=recurring,
         )
         try:
             owner.add_todo(new_todo, date.today())
@@ -193,8 +183,7 @@ else:
             with task_col:
                 st.write(
                     f"**{todo.task}** at {format_time(todo.time)} "
-                    f"({todo.duration_minutes} min, {todo.status}"
-                    f"{', recurring' if todo.recurring else ''})"
+                    f"({todo.duration_minutes} min, {todo.status})"
                 )
             with action_col:
                 if todo.status == "pending" and st.button(
@@ -210,7 +199,6 @@ else:
                     "duration_minutes": todo.duration_minutes,
                     "priority": PRIORITY_LABELS.get(todo.priority, todo.priority),
                     "status": todo.status,
-                    "recurring": todo.recurring,
                 }
                 for todo in pet_tasks
             ]
@@ -268,8 +256,31 @@ if st.button("Generate schedule"):
                         "priority": PRIORITY_LABELS.get(todo.priority, todo.priority),
                         "duration_minutes": todo.duration_minutes,
                         "status": todo.status,
-                        "recurring": todo.recurring,
                     }
                     for todo in display_tasks
                 ]
             )
+
+st.divider()
+
+st.subheader("Pet Documentation")
+st.caption("Search aftercare instructions by keyword.")
+
+doc_query = st.text_input(
+    "Search pet documentation",
+    placeholder="e.g. incision care, vomiting, bandage",
+    key="doc_search_query",
+)
+
+if doc_query.strip():
+    doc_index = _cached_doc_index(str(DOCS_DIR), _docs_cache_key(DOCS_DIR))
+    matches = doc_index.search(doc_query, top_k=5)
+    if not matches:
+        st.info("No matching sections found.")
+    else:
+        for match in matches:
+            section = match.section
+            st.markdown(f"**Source:** `{section.source_file}`")
+            st.markdown(f"### {section.heading}")
+            st.markdown(section.content)
+            st.divider()

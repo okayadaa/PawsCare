@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+import re
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 
 WEEKDAYS = {0, 1, 2, 3, 4}
 WEEKENDS = {5, 6}
@@ -39,7 +42,6 @@ class ToDo:
     availability: str
     pet: PetInfo | None = None
     status: str = "pending"
-    recurring: bool = False
 
     @property
     def time(self) -> time:
@@ -50,8 +52,6 @@ class ToDo:
 
     def mark_complete(self) -> None:
         self.status = "complete"
-        if self.recurring:
-            self.status = "pending"
 
 
 class AvailabilityError(ValueError):
@@ -127,7 +127,7 @@ class DayPlan:
         return sum(todo.duration_minutes for todo in self.owner.todos)
 
     def sort_by_priority(self) -> None:
-        self.owner.todos.sort(key=lambda t: t.priority)
+        self.owner.todos.sort(key=lambda t: t.priority, reverse=True)
 
     def sort_by_time(self) -> None:
         self.owner.todos.sort(key=lambda t: t.time)
@@ -258,6 +258,262 @@ def _task_interval(todo: ToDo, plan_date: date) -> tuple[datetime, datetime]:
     start = datetime.combine(plan_date, todo.time)
     end = start + timedelta(minutes=todo.duration_minutes)
     return start, end
+
+
+@dataclass
+class DocSection:
+    source_file: str
+    heading: str
+    content: str
+    doc_title: str = ""
+
+
+def normalize_doc_heading(text: str) -> str:
+    heading = text.strip()
+    if heading.startswith("##"):
+        heading = heading[2:]
+    return " ".join(heading.strip().lower().split())
+
+
+def load_aftercare_sections(docs_dir: Path | str) -> list[DocSection]:
+    sections: list[DocSection] = []
+    docs_path = Path(docs_dir)
+
+    for md_file in sorted(docs_path.glob("*.md")):
+        current_heading: str | None = None
+        current_original: str | None = None
+        current_lines: list[str] = []
+        doc_title = ""
+
+        for line in md_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith("# ") and not line.startswith("## "):
+                doc_title = line[2:].strip()
+            elif line.startswith("## "):
+                if current_heading is not None and current_original is not None:
+                    sections.append(
+                        DocSection(
+                            source_file=md_file.name,
+                            heading=current_original,
+                            content="\n".join(current_lines).strip(),
+                            doc_title=doc_title,
+                        )
+                    )
+                current_original = line[3:].strip()
+                current_heading = normalize_doc_heading(current_original)
+                current_lines = []
+            elif current_heading is not None:
+                current_lines.append(line)
+
+        if current_heading is not None and current_original is not None:
+            sections.append(
+                DocSection(
+                    source_file=md_file.name,
+                    heading=current_original,
+                    content="\n".join(current_lines).strip(),
+                    doc_title=doc_title,
+                )
+            )
+
+    return sections
+
+
+def get_aftercare_headings(docs_dir: Path | str = "docs") -> list[str]:
+    headings: list[str] = []
+    seen: set[str] = set()
+
+    for section in load_aftercare_sections(docs_dir):
+        normalized = normalize_doc_heading(section.heading)
+        if normalized not in seen:
+            seen.add(normalized)
+            headings.append(section.heading)
+
+    return headings
+
+
+STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "if",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "with",
+        "you",
+        "your",
+        "what",
+        "whats",
+        "how",
+        "being",
+    }
+)
+
+
+def _document_metadata_terms(section: DocSection) -> list[str]:
+    stem = Path(section.source_file).stem.replace("-", " ")
+    return tokenize(stem) + tokenize(section.doc_title)
+
+
+def tokenize(text: str) -> list[str]:
+    cleaned = text.lower()
+    if cleaned.startswith("##"):
+        cleaned = cleaned[2:]
+    words = re.findall(r"[a-z0-9]+", cleaned)
+    return [word for word in words if len(word) >= 2 and word not in STOPWORDS]
+
+
+def _normalized_text(text: str) -> str:
+    cleaned = text.lower()
+    if cleaned.startswith("##"):
+        cleaned = cleaned[2:]
+    return " ".join(re.findall(r"[a-z0-9]+", cleaned))
+
+
+def _query_phrases(query_terms: list[str]) -> list[str]:
+    phrases: list[str] = []
+    for size in range(2, len(query_terms) + 1):
+        for start in range(len(query_terms) - size + 1):
+            phrases.append(" ".join(query_terms[start : start + size]))
+    return phrases
+
+
+def _phrase_boost(query_terms: list[str], heading: str) -> float:
+    heading_text = _normalized_text(heading)
+    boost = 0.0
+    for phrase in _query_phrases(query_terms):
+        if phrase in heading_text:
+            boost += 0.15 * len(phrase.split())
+    return boost
+
+
+def _exclusive_topic_boost(
+    query_terms: list[str],
+    source_file: str,
+    file_metadata: dict[str, set[str]],
+) -> float:
+    boost = 0.0
+    for term in query_terms:
+        matching_files = [
+            filename
+            for filename, metadata_terms in file_metadata.items()
+            if term in metadata_terms
+        ]
+        if len(matching_files) == 1 and source_file == matching_files[0]:
+            boost += 1.0
+    return boost
+
+
+@dataclass
+class SearchMatch:
+    section: DocSection
+    score: float
+
+
+@dataclass
+class DocSearchIndex:
+    sections: list[DocSection]
+    index: dict[str, dict[int, int]] = field(default_factory=dict)
+    section_term_totals: dict[int, int] = field(default_factory=dict)
+    file_metadata: dict[str, set[str]] = field(default_factory=dict)
+
+    @classmethod
+    def build(cls, sections: list[DocSection]) -> DocSearchIndex:
+        doc_index = cls(sections=list(sections))
+        for section_idx, section in enumerate(sections):
+            term_counts: dict[str, int] = {}
+            for term in tokenize(section.heading):
+                term_counts[term] = term_counts.get(term, 0) + 2
+            for term in tokenize(section.content):
+                term_counts[term] = term_counts.get(term, 0) + 1
+            for term in _document_metadata_terms(section):
+                term_counts[term] = term_counts.get(term, 0) + 4
+
+            doc_index.section_term_totals[section_idx] = sum(term_counts.values())
+            for term, count in term_counts.items():
+                doc_index.index.setdefault(term, {})[section_idx] = count
+
+            if section.source_file not in doc_index.file_metadata:
+                doc_index.file_metadata[section.source_file] = set(
+                    _document_metadata_terms(section)
+                )
+
+        return doc_index
+
+    def search(self, query: str, top_k: int = 5) -> list[SearchMatch]:
+        query_terms = tokenize(query)
+        if not query_terms or not self.sections:
+            return []
+
+        num_sections = len(self.sections)
+        scores: dict[int, float] = {}
+
+        for term in query_terms:
+            section_counts = self.index.get(term)
+            if not section_counts:
+                continue
+
+            document_frequency = len(section_counts)
+            idf = math.log((num_sections + 1) / (document_frequency + 1))
+
+            for section_idx, count in section_counts.items():
+                total_terms = self.section_term_totals[section_idx]
+                if total_terms == 0:
+                    continue
+                tf = count / total_terms
+                scores[section_idx] = scores.get(section_idx, 0.0) + tf * idf
+
+        for section_idx, section in enumerate(self.sections):
+            if section_idx not in scores:
+                continue
+            scores[section_idx] += _phrase_boost(query_terms, section.heading)
+            scores[section_idx] += _exclusive_topic_boost(
+                query_terms, section.source_file, self.file_metadata
+            )
+
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        matches: list[SearchMatch] = []
+        seen_source_files: set[str] = set()
+
+        for section_idx, score in ranked:
+            section = self.sections[section_idx]
+            if section.source_file in seen_source_files:
+                continue
+            seen_source_files.add(section.source_file)
+            matches.append(SearchMatch(section=section, score=score))
+            if len(matches) >= top_k:
+                break
+
+        return matches
+
+
+def build_doc_search_index(docs_dir: Path | str = "docs") -> DocSearchIndex:
+    return DocSearchIndex.build(load_aftercare_sections(docs_dir))
+
+
+def search_aftercare_docs(
+    query: str,
+    docs_dir: Path | str = "docs",
+    *,
+    top_k: int = 5,
+) -> list[DocSection]:
+    if not query.strip():
+        return []
+
+    matches = build_doc_search_index(docs_dir).search(query, top_k=top_k)
+    return [match.section for match in matches]
 
 
 def task_schedule_conflicts(

@@ -1,10 +1,13 @@
 from datetime import date, time
+from pathlib import Path
 
 import pytest
 
 from pawpal_system import (
     AvailabilityError,
     AvailabilityWindow,
+    DayPlan,
+    DocSearchIndex,
     Owner,
     PetInfo,
     ScheduleConflictError,
@@ -12,8 +15,14 @@ from pawpal_system import (
     ToDo,
     WEEKDAYS,
     availability_conflicts,
+    build_doc_search_index,
+    get_aftercare_headings,
+    load_aftercare_sections,
+    search_aftercare_docs,
     task_schedule_conflicts,
 )
+
+DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
 
 
 def _weekday_availability() -> AvailabilityWindow:
@@ -89,6 +98,23 @@ def test_availability_no_conflict_inside_window():
     assert conflicts == []
 
 
+def test_sort_by_priority_orders_high_before_low():
+    owner = Owner("Alex", _weekday_availability())
+    buddy = PetInfo("Buddy", 3, "Golden Retriever")
+    owner.add_pet(buddy)
+    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy))
+    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy))
+    owner.add_todo(ToDo("Lunch feeding", 2, 15, "12:00", buddy))
+
+    DayPlan(date(2026, 6, 22), owner).sort_by_priority()
+
+    assert [todo.task for todo in owner.todos] == [
+        "Morning walk",
+        "Lunch feeding",
+        "Afternoon play",
+    ]
+
+
 def test_sort_by_time_orders_tasks_chronologically():
     owner = Owner("Alex", _weekday_availability())
     buddy = PetInfo("Buddy", 3, "Golden Retriever")
@@ -137,22 +163,6 @@ def test_filter_tasks_by_pet_name():
     assert buddy_tasks[0].task == "Morning walk"
 
 
-def test_recurring_task_resets_after_checkoff():
-    todo = ToDo("Morning walk", 3, 30, "09:00", recurring=True)
-
-    todo.mark_complete()
-
-    assert todo.status == "pending"
-
-
-def test_non_recurring_task_stays_complete():
-    todo = ToDo("One-time vet visit", 3, 60, "15:00")
-
-    todo.mark_complete()
-
-    assert todo.status == "complete"
-
-
 def test_task_schedule_conflicts_detects_overlap():
     owner = Owner("Alex", _weekday_availability())
     buddy = PetInfo("Buddy", 3, "Golden Retriever")
@@ -175,6 +185,108 @@ def test_add_todo_blocks_overlapping_tasks():
         owner.add_todo(ToDo("Grooming", 2, 30, "10:15", buddy))
 
     assert len(owner.todos) == 1
+
+
+def test_get_aftercare_headings_returns_unique_headings():
+    headings = get_aftercare_headings(DOCS_DIR)
+
+    assert "Wound Care Basics" in headings
+    assert "First 24 Hours" in headings
+    assert len(headings) == len({heading.lower() for heading in headings})
+
+
+def test_search_aftercare_docs_finds_matching_section():
+    results = search_aftercare_docs("##Wound Care Basics", DOCS_DIR)
+
+    assert len(results) >= 1
+    assert results[0].heading == "Wound Care Basics"
+    assert "Check the wound **twice daily**" in results[0].content
+    assert results[0].source_file == "wound-injury-aftercare.md"
+
+
+def test_search_aftercare_docs_is_case_insensitive():
+    results = search_aftercare_docs("##wound care basics", DOCS_DIR)
+
+    assert len(results) >= 1
+    assert results[0].heading == "Wound Care Basics"
+
+
+def test_search_aftercare_docs_returns_empty_for_unknown_heading():
+    results = search_aftercare_docs("##Unknown Section", DOCS_DIR)
+
+    assert results == []
+
+
+def test_doc_index_maps_terms_to_sections():
+    doc_index = build_doc_search_index(DOCS_DIR)
+    incision_sections = doc_index.index.get("incision", {})
+
+    assert any(
+        doc_index.sections[section_idx].heading == "Incision Care"
+        for section_idx in incision_sections
+    )
+
+
+def test_search_ranks_relevant_section():
+    results = search_aftercare_docs("incision care", DOCS_DIR)
+
+    assert len(results) >= 1
+    assert results[0].heading == "Incision Care"
+
+
+def test_search_multi_word_query():
+    results = search_aftercare_docs("call vet bleeding", DOCS_DIR)
+
+    assert len(results) >= 1
+    headings = {section.heading for section in results}
+    assert headings & {
+        "Call the Vet If You See",
+        "Call the Vet Immediately If",
+    }
+
+
+def test_search_returns_empty_for_no_matches():
+    results = search_aftercare_docs("zzzzunknown", DOCS_DIR)
+
+    assert results == []
+
+
+def test_search_respects_top_k():
+    results = search_aftercare_docs("care", DOCS_DIR, top_k=2)
+
+    assert len(results) <= 2
+
+
+def test_search_spay_query_prefers_spay_neuter_doc():
+    query = "what's the steps for first 24 hours for pets being spay?"
+    results = search_aftercare_docs(query, DOCS_DIR)
+
+    assert len(results) >= 1
+    assert results[0].source_file == "spay-neuter-aftercare.md"
+    assert results[0].heading == "First 24 Hours"
+
+
+def test_search_spay_neuter_slash_query_prefers_spay_neuter_doc():
+    query = "what's the steps for first 24 hours for pets being spay/neuter?"
+    results = search_aftercare_docs(query, DOCS_DIR)
+
+    assert len(results) >= 1
+    assert results[0].source_file == "spay-neuter-aftercare.md"
+    assert results[0].heading == "First 24 Hours"
+
+
+def test_search_dedupes_by_source_file():
+    results = search_aftercare_docs("care", DOCS_DIR, top_k=5)
+
+    assert len(results) <= 5
+    assert len({section.source_file for section in results}) == len(results)
+
+
+def test_search_phrase_boost_prefers_matching_heading():
+    results = search_aftercare_docs("first 24 hours", DOCS_DIR, top_k=5)
+
+    assert len(results) >= 2
+    assert all(section.heading == "First 24 Hours" for section in results[:2])
 
 
 def test_generate_day_plan_sorts_by_time():

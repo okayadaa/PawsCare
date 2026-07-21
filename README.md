@@ -71,5 +71,4 @@ Sample test output:
 | Task sorting | DayPlan.sort_by_time() | Sorts tasks by scheduled time or priority; day plans are built in chronological order.|
 | Filtering | Scheduler.filter_tasks() | Filters by status and pet; excludes tasks for unregistered pets. Does not yet drop tasks when time runs out |
 | Conflict handling | task_schedule_conflicts() | Blocks tasks outside the owner’s availability window and overlapping time slots; raises AvailabilityError or ScheduleConflictError |
-| Recurring tasks | ToDo.recurring | Recurring tasks reset to pending after check-off |
 
