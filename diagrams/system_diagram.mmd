@@ -1,0 +1,54 @@
+flowchart TB
+    %% ---------- Input ----------
+    subgraph INPUT["Input (Human)"]
+        User(["Pet owner"])
+        UI["Streamlit UI - app.py<br/>pets, tasks, availability, doc query"]
+    end
+
+    %% ---------- Processing ----------
+    subgraph CORE["Processing - pawpal_system.py"]
+        Agent["Scheduling Agent<br/>Owner + Scheduler<br/>sort / filter / conflict checks"]
+        Guard["Guardrails / Validator<br/>availability_conflicts<br/>task_schedule_conflicts"]
+        Retriever["Retriever<br/>DocSearchIndex - TF-IDF search<br/>over aftercare docs"]
+        Evaluator["Evaluator<br/>is_confident_query<br/>confidence threshold"]
+    end
+
+    Docs[("Aftercare docs<br/>docs/*.md")]
+
+    %% ---------- Output ----------
+    subgraph OUTPUT["Output (Human reviews)"]
+        Plan["Day plan / schedule table"]
+        Answer["Retrieved aftercare section<br/>or 'I'm not so sure' notice"]
+    end
+
+    %% ---------- Testing ----------
+    subgraph TEST["Testing"]
+        Pytest["pytest - tests/test_pawpal.py<br/>verifies scheduling & retrieval"]
+    end
+
+    %% ---------- Data flow ----------
+    User --> UI
+    UI -->|task input| Agent
+    Agent --> Guard
+    Guard -->|valid| Plan
+    Guard -.->|conflict error| UI
+
+    UI -->|search query| Retriever
+    Docs --> Retriever
+    Retriever --> Evaluator
+    Evaluator -->|confident| Answer
+    Evaluator -.->|not confident| Answer
+
+    %% ---------- Human & test checkpoints ----------
+    Plan --> User
+    Answer --> User
+    User -.->|marks task Done / re-queries| UI
+
+    Pytest -.->|checks results| Agent
+    Pytest -.->|checks results| Retriever
+    Pytest -.->|checks results| Evaluator
+
+    classDef human fill:#e3f2fd,stroke:#1565c0,color:#0d47a1;
+    classDef test fill:#fff3e0,stroke:#e65100,color:#e65100;
+    class User,UI,Plan,Answer human;
+    class Pytest test;
