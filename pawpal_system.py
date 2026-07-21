@@ -358,8 +358,13 @@ STOPWORDS = frozenset(
         "whats",
         "how",
         "being",
+        "my",
+        "properly",
+        "steps",
     }
 )
+
+MIN_CONFIDENCE_SCORE = 0.074
 
 
 def _document_metadata_terms(section: DocSection) -> list[str]:
@@ -420,6 +425,38 @@ def _exclusive_topic_boost(
 class SearchMatch:
     section: DocSection
     score: float
+
+
+@dataclass
+class SearchResponse:
+    matches: list[SearchMatch]
+    confident: bool
+
+
+def _term_in_index(term: str, index: dict[str, dict[int, int]]) -> bool:
+    if term in index:
+        return True
+    if len(term) < 4:
+        return False
+    for indexed_term in index:
+        if len(indexed_term) < 4:
+            continue
+        if indexed_term.startswith(term) or term.startswith(indexed_term):
+            return True
+    return False
+
+
+def is_confident_query(
+    query: str, index: DocSearchIndex, matches: list[SearchMatch]
+) -> bool:
+    query_terms = tokenize(query)
+    if not query_terms or not matches:
+        return False
+
+    if not all(_term_in_index(term, index.index) for term in query_terms):
+        return False
+
+    return matches[0].score >= MIN_CONFIDENCE_SCORE
 
 
 @dataclass
@@ -503,17 +540,30 @@ def build_doc_search_index(docs_dir: Path | str = "docs") -> DocSearchIndex:
     return DocSearchIndex.build(load_aftercare_sections(docs_dir))
 
 
+def search_aftercare(
+    query: str,
+    docs_dir: Path | str = "docs",
+    *,
+    top_k: int = 5,
+    index: DocSearchIndex | None = None,
+) -> SearchResponse:
+    if not query.strip():
+        return SearchResponse(matches=[], confident=False)
+
+    doc_index = index or build_doc_search_index(docs_dir)
+    matches = doc_index.search(query, top_k=top_k)
+    confident = is_confident_query(query, doc_index, matches)
+    return SearchResponse(matches=matches if confident else [], confident=confident)
+
+
 def search_aftercare_docs(
     query: str,
     docs_dir: Path | str = "docs",
     *,
     top_k: int = 5,
 ) -> list[DocSection]:
-    if not query.strip():
-        return []
-
-    matches = build_doc_search_index(docs_dir).search(query, top_k=top_k)
-    return [match.section for match in matches]
+    response = search_aftercare(query, docs_dir, top_k=top_k)
+    return [match.section for match in response.matches]
 
 
 def task_schedule_conflicts(

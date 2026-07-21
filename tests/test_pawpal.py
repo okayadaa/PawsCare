@@ -18,6 +18,7 @@ from pawpal_system import (
     build_doc_search_index,
     get_aftercare_headings,
     load_aftercare_sections,
+    search_aftercare,
     search_aftercare_docs,
     task_schedule_conflicts,
 )
@@ -287,6 +288,33 @@ def test_search_phrase_boost_prefers_matching_heading():
 
     assert len(results) >= 2
     assert all(section.heading == "First 24 Hours" for section in results[:2])
+
+
+def test_search_not_confident_for_unknown_topic():
+    query = "How do I clean properly my pet's ears"
+    response = search_aftercare(query, DOCS_DIR)
+
+    assert response.confident is False
+    assert response.matches == []
+
+
+def test_search_confident_for_known_topic():
+    confident_queries = [
+        "incision care",
+        "call vet bleeding",
+        "vaccination swelling",
+    ]
+    for query in confident_queries:
+        response = search_aftercare(query, DOCS_DIR)
+        assert response.confident is True, query
+        assert len(response.matches) >= 1, query
+
+
+def test_search_not_confident_for_gibberish():
+    response = search_aftercare("zzzzunknown", DOCS_DIR)
+
+    assert response.confident is False
+    assert response.matches == []
 
 
 def test_generate_day_plan_sorts_by_time():

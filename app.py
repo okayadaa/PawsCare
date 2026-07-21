@@ -17,6 +17,7 @@ from pawpal_system import (
     format_time,
     load_aftercare_sections,
     parse_task_time,
+    search_aftercare,
 )
 
 DOCS_DIR = Path(__file__).resolve().parent / "docs"
@@ -274,11 +275,15 @@ doc_query = st.text_input(
 
 if doc_query.strip():
     doc_index = _cached_doc_index(str(DOCS_DIR), _docs_cache_key(DOCS_DIR))
-    matches = doc_index.search(doc_query, top_k=5)
-    if not matches:
+    response = search_aftercare(doc_query, DOCS_DIR, top_k=5, index=doc_index)
+    if not response.confident:
+        st.warning(
+            "I'm not so sure — I couldn't find that topic in the aftercare docs."
+        )
+    elif not response.matches:
         st.info("No matching sections found.")
     else:
-        for match in matches:
+        for match in response.matches:
             section = match.section
             st.markdown(f"**Source:** `{section.source_file}`")
             st.markdown(f"### {section.heading}")
