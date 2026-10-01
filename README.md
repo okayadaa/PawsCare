@@ -1,4 +1,4 @@
-# PawPal+ (Module 2 Project)
+# PawsCare
 
 ## Summary
 PawPal+ is a smart pet care management system. Where users can stay consistent on tracking pet care tasks such as walking, grooming, feeding time, and medication. Users are able to input their day/time availability, the duration for each task, and setting priorites. When the user fills out their info on their end then the system will generate a build schedule plan for the day. The schedule plan feature will construct a smooth and efficient schedule based on the timing, availability, and priorities. One new feature that is implemented is a Pet documentation (Retrieval only), where users submit any aftercare documentation and the user are able to ask any questions that are related to the documentation. The system will provide accurate information based on the user's question.       
