@@ -3,3 +3,8 @@ __pycache__/
 .venv_new/
 .pytest_cache/
 .DS_Store
+# Secrets: passwords and keys never go on GitHub
+.streamlit/secrets.toml
+
+# Local database used in local mode
+pawpal_local.db

@@ -3,6 +3,7 @@ from datetime import date, time
 from pathlib import Path
 
 import streamlit as st
+from sqlalchemy.exc import SQLAlchemyError
 
 from pawpal_system import (
     ALL_DAYS,
@@ -24,8 +25,13 @@ from pawpal_system import (
     parse_task_time,
     search_aftercare,
 )
+from storage import delete_owner, load_owner, make_engine, save_owner
 
-DOCS_DIR = Path(__file__).resolve().parent / "docs"
+APP_DIR = Path(__file__).resolve().parent
+DOCS_DIR = APP_DIR / "docs"
+LOGO_PATH = APP_DIR / "assets" / "logo-image.png"
+LOCAL_DATABASE_URL = f"sqlite:///{APP_DIR / 'pawpal_local.db'}"
+LOCAL_USER_ID = "local-dev"
 SPECIES_OPTIONS = ["dog", "cat", "rabbit", "bird", "other"]
 DAY_PRESET_LABELS = list(DAY_PRESETS.keys())
 
@@ -39,6 +45,21 @@ def _docs_cache_key(docs_dir: Path) -> str:
 @st.cache_data
 def _cached_doc_index(docs_dir: str, _cache_key: str) -> DocSearchIndex:
     return DocSearchIndex.build(load_aftercare_sections(docs_dir))
+
+
+@st.cache_resource
+def get_engine(database_url: str):
+    # cache_resource keeps ONE database connection pool for the whole app,
+    # shared by every visitor, instead of reconnecting on every click.
+    return make_engine(database_url)
+
+
+def has_secret_section(name: str) -> bool:
+    """True if .streamlit/secrets.toml (or the cloud Secrets box) has [name]."""
+    try:
+        return name in st.secrets
+    except Exception:  # no secrets file at all
+        return False
 
 
 def parse_time_field(label: str, value: time, key: str) -> time:
@@ -62,8 +83,8 @@ def preset_label_for_days(days: set[int]) -> str:
     return DAY_PRESET_LABELS[0]
 
 
-def new_owner() -> Owner:
-    return Owner("", AvailabilityWindow(set(ALL_DAYS), time(8, 0), time(20, 0)))
+def new_owner(name: str = "") -> Owner:
+    return Owner(name, AvailabilityWindow(set(ALL_DAYS), time(8, 0), time(20, 0)))
 
 
 def reset_owner_widgets() -> None:
@@ -72,27 +93,106 @@ def reset_owner_widgets() -> None:
         st.session_state.pop(key, None)
 
 
-st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
+def show_header() -> None:
+    logo_col, title_col = st.columns([1, 8], vertical_alignment="center")
+    with logo_col:
+        st.image(str(LOGO_PATH), width=80)
+    with title_col:
+        st.title("PawsCare+")
 
-if "owner" not in st.session_state:
-    st.session_state.owner = new_owner()
+
+st.set_page_config(page_title="PawsCare+", page_icon="🐾", layout="centered")
+
+# ---------------------------------------------------------------------------
+# Who is using the app?
+#
+# With an [auth] section in secrets, people sign in with Google and each
+# account gets its own saved data. Without it (on your own computer), the app
+# runs in local mode: no sign-in, one shared user, saved to a SQLite file.
+# ---------------------------------------------------------------------------
+
+AUTH_ENABLED = has_secret_section("auth")
+
+if AUTH_ENABLED:
+    if not st.user.is_logged_in:
+        show_header()
+        st.markdown(
+            "Plan your pets' daily care. Add your pets and their tasks (walks, "
+            "feeding, medication, grooming), and PawsCare+ builds a schedule "
+            "that fits the hours you're available and warns you about "
+            "overlapping tasks."
+        )
+        st.button("Sign in with Google", type="primary", on_click=st.login)
+        st.caption(
+            "Signing in lets PawsCare+ save your pets and tasks so they're "
+            "there next time, on any device. We store your email address and "
+            "the pets and tasks you enter, and nothing else. You can delete "
+            "your data at any time from the sidebar."
+        )
+        st.stop()  # nothing below this line runs until the user signs in
+    user_id = st.user.sub  # Google's permanent ID for this account
+    user_email = st.user.get("email")
+    display_name = st.user.get("given_name") or st.user.get("name") or ""
+else:
+    user_id = LOCAL_USER_ID
+    user_email = None
+    display_name = ""
+
+database_url = (
+    st.secrets["database"]["url"]
+    if has_secret_section("database")
+    else LOCAL_DATABASE_URL
+)
+
+# ---------------------------------------------------------------------------
+# Load this user's saved data once per visit
+# ---------------------------------------------------------------------------
+
+if st.session_state.get("loaded_user_id") != user_id:
+    try:
+        engine = get_engine(database_url)
+        saved_owner = load_owner(engine, user_id)
+    except (SQLAlchemyError, ValueError) as exc:
+        # Stop instead of starting with an empty plan: saving an empty plan
+        # would overwrite the user's real data once the database is back.
+        show_header()
+        st.error(
+            "PawsCare+ couldn't load your saved data right now. "
+            "Please refresh the page in a minute."
+        )
+        print(f"Database load failed: {exc!r}")  # visible in the app logs
+        st.stop()
+    st.session_state.owner = saved_owner or new_owner(display_name)
+    st.session_state.loaded_user_id = user_id
+    st.session_state.last_saved = json.dumps(
+        owner_to_dict(st.session_state.owner), sort_keys=True
+    )
+    reset_owner_widgets()
 
 owner: Owner = st.session_state.owner
 
 # ---------------------------------------------------------------------------
-# Sidebar: save and restore
+# Sidebar: account and data
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.header("Save your plan")
-    st.caption(
-        "PawPal+ doesn't store your data on a server. Download a backup to "
-        "keep your pets and tasks, then upload it next time."
-    )
+    st.header("Your account")
+    if AUTH_ENABLED:
+        st.write(f"Signed in as **{user_email}**")
+        st.button("Sign out", on_click=st.logout, use_container_width=True)
+        st.caption("Your pets and tasks are saved automatically.")
+    else:
+        st.warning(
+            "**Local mode.** Sign-in isn't set up, so everyone using this copy "
+            "of the app shares the same data, saved in `pawpal_local.db`. "
+            "That's fine on your own computer, but don't deploy it this way."
+        )
+
+    st.subheader("Backup")
     st.download_button(
-        "Download backup",
+        "Download a copy of my data",
         data=json.dumps(owner_to_dict(owner), indent=2),
-        file_name="pawpal_backup.json",
+        file_name="pawscare_backup.json",
         mime="application/json",
         use_container_width=True,
     )
@@ -108,28 +208,46 @@ with st.sidebar:
             reset_owner_widgets()
             st.rerun()
     if st.session_state.get("loaded_file_id") and uploaded is not None:
-        st.success("Backup loaded.")
+        st.success("Backup restored.")
 
     st.divider()
-    if st.button("Start over", use_container_width=True):
-        st.session_state.owner = new_owner()
-        st.session_state.pop("loaded_file_id", None)
-        reset_owner_widgets()
-        st.rerun()
+    with st.expander("Start over or delete my data"):
+        st.caption("Start over clears your pets and tasks but keeps your account.")
+        if st.button("Start over", use_container_width=True):
+            st.session_state.owner = new_owner(display_name)
+            st.session_state.pop("loaded_file_id", None)
+            reset_owner_widgets()
+            st.rerun()
+
+        st.caption("Delete removes everything PawsCare+ has saved for you.")
+        confirm_delete = st.checkbox("I understand this can't be undone")
+        if st.button(
+            "Delete my data",
+            type="primary",
+            disabled=not confirm_delete,
+            use_container_width=True,
+        ):
+            try:
+                delete_owner(get_engine(database_url), user_id)
+            except SQLAlchemyError as exc:
+                print(f"Database delete failed: {exc!r}")
+                st.error("Couldn't delete your data right now. Please try again.")
+            else:
+                for key in ("owner", "loaded_user_id", "last_saved", "loaded_file_id"):
+                    st.session_state.pop(key, None)
+                if AUTH_ENABLED:
+                    st.logout()
+                else:
+                    st.rerun()
 
 # ---------------------------------------------------------------------------
 # Main page
 # ---------------------------------------------------------------------------
-logo_col, title_col = st.columns([1, 8], vertical_alignment="center")
 
-with logo_col:
-    st.image("assets/logo-image.png", width=80)
-
-with title_col:
-    st.title("PawsCare+")
+show_header()
 st.markdown(
     "Plan your pets' daily care. Add your pets and their tasks (walks, "
-    "feeding, medication, grooming), and PawPal+ builds a schedule that fits "
+    "feeding, medication, grooming), and PawsCare+ builds a schedule that fits "
     "the hours you're available and warns you about overlapping tasks."
 )
 
@@ -337,3 +455,21 @@ if doc_query.strip():
             st.markdown(f"### {section.heading}")
             st.markdown(section.content)
             st.divider()
+
+# ---------------------------------------------------------------------------
+# Autosave
+#
+# Streamlit reruns this whole file after every click, so reaching this line
+# means the click has been handled. If anything changed since the last save,
+# write it to the database.
+# ---------------------------------------------------------------------------
+
+current = json.dumps(owner_to_dict(owner), sort_keys=True)
+if current != st.session_state.get("last_saved"):
+    try:
+        save_owner(get_engine(database_url), user_id, user_email, owner)
+    except SQLAlchemyError as exc:
+        print(f"Database save failed: {exc!r}")
+        st.toast("Couldn't save your latest changes. They'll be retried on your next click.")
+    else:
+        st.session_state.last_saved = current
