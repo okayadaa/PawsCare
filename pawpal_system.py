@@ -11,10 +11,13 @@ WEEKENDS = {5, 6}
 ALL_DAYS = set(range(7))
 
 DAY_PRESETS: dict[str, set[int]] = {
+    "Every day": ALL_DAYS,
     "Weekdays (Mon–Fri)": WEEKDAYS,
     "Weekends (Sat–Sun)": WEEKENDS,
-    "Every day": ALL_DAYS,
 }
+
+PRIORITY_MAP = {"low": 1, "medium": 2, "high": 3}
+PRIORITY_LABELS = {value: label for label, value in PRIORITY_MAP.items()}
 
 
 @dataclass
@@ -28,10 +31,14 @@ class AvailabilityWindow:
 class PetInfo:
     name: str
     age: int
-    breed: str
+    breed: str = ""
+    species: str = ""
 
     def get_pet_info(self) -> str:
-        pass
+        details = [part for part in (self.species, self.breed) if part]
+        kind = f" ({', '.join(details)})" if details else ""
+        years = "year" if self.age == 1 else "years"
+        return f"{self.name}{kind}, {self.age} {years} old"
 
 
 @dataclass
@@ -71,7 +78,16 @@ class Owner:
         self.day_plans: list[DayPlan] = []
 
     def add_pet(self, pet: PetInfo) -> None:
+        name = pet.name.strip()
+        if not name:
+            raise ValueError("Pet name can't be empty.")
+        if any(existing.name.lower() == name.lower() for existing in self.pets):
+            raise ValueError(f"You already have a pet named {name!r}.")
+        pet.name = name
         self.pets.append(pet)
+
+    def remove_todo(self, todo: ToDo) -> None:
+        self.todos = [existing for existing in self.todos if existing is not todo]
 
     def add_todo(self, todo: ToDo, plan_date: date | None = None) -> None:
         if todo.pet is not None and todo.pet not in self.pets:
@@ -118,22 +134,48 @@ class Owner:
 
 
 class DayPlan:
-    def __init__(self, plan_date: date, owner: Owner) -> None:
+    """A snapshot of one day's tasks.
+
+    The plan keeps its own task list, so sorting a plan never reorders
+    the owner's master list of to-dos.
+    """
+
+    def __init__(
+        self, plan_date: date, owner: Owner, tasks: list[ToDo] | None = None
+    ) -> None:
         self.date = plan_date
         self.owner = owner
+        self.tasks: list[ToDo] = list(owner.todos if tasks is None else tasks)
 
     @property
     def total_duration(self) -> int:
-        return sum(todo.duration_minutes for todo in self.owner.todos)
+        return sum(todo.duration_minutes for todo in self.tasks)
+
+    @property
+    def remaining_duration(self) -> int:
+        return sum(
+            todo.duration_minutes for todo in self.tasks if todo.status != "complete"
+        )
 
     def sort_by_priority(self) -> None:
-        self.owner.todos.sort(key=lambda t: t.priority, reverse=True)
+        self.tasks.sort(key=lambda t: t.priority, reverse=True)
 
     def sort_by_time(self) -> None:
-        self.owner.todos.sort(key=lambda t: t.time)
+        self.tasks.sort(key=lambda t: t.time)
 
-    def display_schedule(self) -> None:
-        pass
+    def display_schedule(self) -> list[dict[str, object]]:
+        """Return the plan as table rows, one per task, in the plan's order."""
+        return [
+            {
+                "time": format_time(todo.time),
+                "pet": todo.pet.name if todo.pet else "—",
+                "task": todo.task,
+                "priority": PRIORITY_LABELS.get(todo.priority, todo.priority),
+                "duration_minutes": todo.duration_minutes,
+                "status": todo.status,
+            }
+            for todo in self.tasks
+        ]
 
 
 class Scheduler:
@@ -167,10 +209,8 @@ class Scheduler:
         return filtered
 
     def build_plan(self, owner: Owner, plan_date: date) -> DayPlan:
-        tasks = self._get_tasks(owner)
-        plan = DayPlan(plan_date, owner)
-        if tasks:
-            plan.sort_by_time()
+        plan = DayPlan(plan_date, owner, self._get_tasks(owner))
+        plan.sort_by_time()
         owner.day_plans.append(plan)
         return plan
 
@@ -583,3 +623,100 @@ def task_schedule_conflicts(
                 )
 
     return conflicts
+
+
+# ---------------------------------------------------------------------------
+# Saving and loading
+# ---------------------------------------------------------------------------
+
+SAVE_FORMAT_VERSION = 1
+
+
+def owner_to_dict(owner: Owner) -> dict:
+    """Turn an owner, their pets, and their tasks into plain JSON-safe data."""
+    return {
+        "version": SAVE_FORMAT_VERSION,
+        "owner": {
+            "name": owner.name,
+            "availability": {
+                "days": sorted(owner.availability.days),
+                "start": owner.availability.start.strftime("%H:%M"),
+                "end": owner.availability.end.strftime("%H:%M"),
+            },
+        },
+        "pets": [
+            {
+                "name": pet.name,
+                "age": pet.age,
+                "breed": pet.breed,
+                "species": pet.species,
+            }
+            for pet in owner.pets
+        ],
+        "todos": [
+            {
+                "task": todo.task,
+                "priority": todo.priority,
+                "duration_minutes": todo.duration_minutes,
+                "time": todo.availability,
+                "pet": todo.pet.name if todo.pet else None,
+                "status": todo.status,
+            }
+            for todo in owner.todos
+        ],
+    }
+
+
+def owner_from_dict(data: dict) -> Owner:
+    """Rebuild an owner from data made by owner_to_dict.
+
+    Raises ValueError with a readable message if the data is not a
+    PawPal+ save file.
+    """
+    try:
+        if data.get("version") != SAVE_FORMAT_VERSION:
+            raise ValueError("This isn't a PawPal+ save file (unknown version).")
+
+        owner_data = data["owner"]
+        window = owner_data["availability"]
+        owner = Owner(
+            owner_data["name"],
+            AvailabilityWindow(
+                {int(day) for day in window["days"]},
+                parse_task_time(window["start"]),
+                parse_task_time(window["end"]),
+            ),
+        )
+
+        pets_by_name: dict[str, PetInfo] = {}
+        for pet_data in data["pets"]:
+            pet = PetInfo(
+                pet_data["name"],
+                int(pet_data["age"]),
+                pet_data.get("breed", ""),
+                pet_data.get("species", ""),
+            )
+            owner.add_pet(pet)
+            pets_by_name[pet.name] = pet
+
+        for todo_data in data["todos"]:
+            pet_name = todo_data.get("pet")
+            if pet_name is not None and pet_name not in pets_by_name:
+                raise ValueError(f"Task refers to an unknown pet {pet_name!r}.")
+            todo = ToDo(
+                todo_data["task"],
+                int(todo_data["priority"]),
+                int(todo_data["duration_minutes"]),
+                todo_data["time"],
+                pets_by_name.get(pet_name) if pet_name else None,
+                todo_data.get("status", "pending"),
+            )
+            parse_task_time(todo.availability)  # reject unreadable times early
+            # Saved tasks were already checked when they were added, and a
+            # backup may be restored on a different day, so they are loaded
+            # as-is instead of going back through add_todo's date checks.
+            owner.todos.append(todo)
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ValueError(f"This save file is missing data or is damaged ({exc}).") from exc
+
+    return owner

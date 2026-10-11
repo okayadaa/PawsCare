@@ -1,14 +1,8 @@
+"""Command-line demo: builds a sample owner and prints today's schedule."""
+
 from datetime import date, time
 
-from pawpal_system import (
-    AvailabilityWindow,
-    Owner,
-    PetInfo,
-    Scheduler,
-    ToDo,
-    WEEKDAYS,
-    format_time,
-)
+from pawpal_system import ALL_DAYS, AvailabilityWindow, Owner, PetInfo, ToDo
 
 
 def print_todays_schedule(owner: Owner) -> None:
@@ -17,27 +11,23 @@ def print_todays_schedule(owner: Owner) -> None:
     print("Today's Schedule")
     print(f"Date: {plan.date}")
     print(f"Owner: {owner.name}")
-    print("-" * 60)
+    print("-" * 64)
 
-    for todo in Scheduler.sort_by_time(owner.todos):
-        pet_name = todo.pet.name if todo.pet else "—"
+    for row in plan.display_schedule():
         print(
-            f"{format_time(todo.time):>10}  |  {pet_name:<12}  |  "
-            f"Priority {todo.priority}  |  {todo.task} ({todo.duration_minutes} min)"
+            f"{row['time']:>10}  |  {row['pet']:<8}  |  {row['priority']:<6}  |  "
+            f"{row['task']} ({row['duration_minutes']} min)"
         )
 
-    print("-" * 60)
+    print("-" * 64)
     print(f"Total duration: {plan.total_duration} minutes")
 
 
 def main() -> None:
-    owner = Owner(
-        "Alex",
-        AvailabilityWindow(WEEKDAYS, time(9, 0), time(18, 0)),
-    )
+    owner = Owner("Alex", AvailabilityWindow(set(ALL_DAYS), time(9, 0), time(18, 0)))
 
-    buddy = PetInfo("Buddy", 3, "Golden Retriever")
-    luna = PetInfo("Luna", 5, "Siamese")
+    buddy = PetInfo("Buddy", 3, "Golden Retriever", "dog")
+    luna = PetInfo("Luna", 5, "Siamese", "cat")
     owner.add_pet(buddy)
     owner.add_pet(luna)
 

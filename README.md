@@ -1,74 +1,39 @@
-# PawsCare
+# 🐾 PawPal+
 
-## Summary
-PawPal+ is a smart pet care management system. Where users can stay consistent on tracking pet care tasks such as walking, grooming, feeding time, and medication. Users are able to input their day/time availability, the duration for each task, and setting priorites. When the user fills out their info on their end then the system will generate a build schedule plan for the day. The schedule plan feature will construct a smooth and efficient schedule based on the timing, availability, and priorities. One new feature that is implemented is a Pet documentation (Retrieval only), where users submit any aftercare documentation and the user are able to ask any questions that are related to the documentation. The system will provide accurate information based on the user's question.       
+PawPal+ is a Streamlit app that helps busy pet owners stay consistent with daily pet care. You add your pets and their care tasks (walks, feeding, medication, grooming), tell it when you're available, and it builds a schedule for the day. It blocks tasks that fall outside your available hours or overlap with each other, so you catch problems before they happen.
 
-## Context
+It also includes a searchable set of aftercare guides (spay/neuter, dental, wound, and vaccination). If your question isn't covered by the guides, it says so instead of guessing.
 
-A busy pet owner needs help staying consistent with pet care. They want an assistant that can:
+## Features
 
-- Track pet care tasks (walks, feeding, meds, enrichment, grooming, etc.)
-- Consider constraints (time available, priority, owner preferences)
-- Produce a daily plan and explain why it chose that plan
+- **Pets and tasks.** Add multiple pets, then schedule tasks for each with a time, duration, and priority. Mark tasks done or delete them.
+- **Guardrails.** A task is rejected if it starts before or ends after your available hours, or overlaps another task, with a message explaining what's wrong.
+- **Daily schedule.** One time-ordered plan across all your pets, filterable by pet or status, showing total and remaining minutes.
+- **Aftercare search.** A TF-IDF search over the guides in `docs/`, with a confidence check that answers "I'm not so sure" rather than returning a weak match.
+- **Save and restore.** Download your pets and tasks as a JSON backup and upload it later. Nothing is stored on a server.
 
-## What you will build (Original concept)
+## Running it
 
-Your final app should:
-
-- Let a user enter basic owner + pet info
-- Let a user add/edit tasks (duration + priority at minimum)
-- Generate a daily schedule/plan based on constraints and priorities
-- Display the plan clearly (and ideally explain the reasoning)
-- Include tests for the most important scheduling behaviors
-
-## Getting started
-
-### Setup
+Requires Python 3.10 or newer.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+
+streamlit run app.py             # the web app
+python main.py                   # a command-line demo with sample pets
 ```
 
-
-## 🖥️ Sample Output
-
-<img width="650" height="143" alt="Screenshot 2026-06-22 at 2 01 04 AM" src="https://github.com/user-attachments/assets/1c445e5b-a0bc-4d45-ae88-0fe0e226e978" />
-
-
-## 🧪 Testing PawPal+
+## Testing
 
 ```bash
-# Run the full test suite:
 pytest
-
-# Run with coverage:
-pytest --cov
 ```
 
-Sample test output (original):
+The tests in `tests/test_pawpal.py` cover the scheduling rules (availability, overlaps, sorting, filtering, totals), pet and task management, saving and loading, and the aftercare search (ranking, deduplication, and the confidence check). They use a fixed date, so they give the same result on any day of the week.
 
-<img width="813" height="137" alt="Screenshot 2026-06-22 at 9 51 59 PM" src="https://github.com/user-attachments/assets/1f62d3e7-7b7c-4bf4-8929-cfe59d643e39" />
-
-(Updated Version):
-
-<img width="917" height="127" alt="Screenshot 2026-07-21 at 1 56 18 PM" src="https://github.com/user-attachments/assets/5aae4943-a6c4-4e95-96bc-fc1aec824f32" />
-
-
-## 📐 Smarter Scheduling
-
-> Fill in once you've implemented scheduling logic.
-
-| Feature | Method(s) | Notes |
-|---------|-----------|-------|
-| Task sorting | DayPlan.sort_by_time() | Sorts tasks by scheduled time or priority; day plans are built in chronological order.|
-| Filtering | Scheduler.filter_tasks() | Filters by status and pet; excludes tasks for unregistered pets. Does not yet drop tasks when time runs out |
-| Conflict handling | task_schedule_conflicts() | Blocks tasks outside the owner’s availability window and overlapping time slots; raises AvailabilityError or ScheduleConflictError |
-
-## Architecture Overview
-
-My system diagram (`diagrams/system_diagram.mmd`) shows how PawPal+ is split into three main parts: what the user sees, what happens behind the scenes, and what comes back out.
+## How it's built
 
 ```mermaid
 flowchart TB
@@ -78,17 +43,19 @@ flowchart TB
     end
 
     subgraph CORE["Processing - pawpal_system.py"]
-        Agent["Scheduling Agent<br/>Owner + Scheduler"]
-        Guard["Guardrails / Validator"]
+        Agent["Scheduler<br/>Owner + Scheduler + DayPlan"]
+        Guard["Guardrails<br/>availability + overlap checks"]
         Retriever["Retriever - TF-IDF search"]
         Evaluator["Evaluator - confidence threshold"]
+        Store["Save / load<br/>owner_to_dict / owner_from_dict"]
     end
 
-    Docs[("Aftercare docs - docs/*.md")]
+    Docs[("Aftercare guides - docs/*.md")]
+    Backup[("pawpal_backup.json<br/>on the user's device")]
 
     subgraph OUTPUT["Output (Human reviews)"]
         Plan["Day plan / schedule table"]
-        Answer["Retrieved aftercare section<br/>or 'I'm not so sure' notice"]
+        Answer["Matching aftercare section<br/>or 'I'm not so sure' notice"]
     end
 
     User --> UI
@@ -100,35 +67,59 @@ flowchart TB
     Docs --> Retriever
     Retriever --> Evaluator
     Evaluator --> Answer
+    UI <-->|download / upload| Store
+    Store <--> Backup
     Plan --> User
     Answer --> User
 ```
 
-**Scheduling.** The pet owner uses the Streamlit app (`app.py`) to add pets, tasks, and their availability. That info goes to my `Owner` and `Scheduler` classes in `pawpal_system.py`. Before anything gets added to the plan, guardrails check whether the task fits the owner's time window and whether it overlaps with another task. If everything looks good, the user gets a day plan sorted by time. If not, they see an error and can fix it.
+**Scheduling.** The app (`app.py`) collects pets, tasks, and availability and passes them to the `Owner` and `Scheduler` classes in `pawpal_system.py`. Before a task is added, guardrails check that it fits inside the owner's available hours and doesn't overlap another task. Generating a schedule produces a `DayPlan`, a time-sorted snapshot of the day's tasks.
 
-**Aftercare docs.** There's also a separate search feature. The user types a question, and a TF-IDF retriever searches the markdown files in `docs/`. An evaluator checks if the match is good enough — if it's not, the app says "I'm not so sure" instead of guessing.
+**Aftercare guides.** The user types a question, and a TF-IDF retriever searches the markdown files in `docs/`. An evaluator checks whether the best match is strong enough. If it isn't, the app says "I'm not so sure" instead of guessing.
 
-**Testing.** I wrote tests in `tests/test_pawpal.py` that hit the scheduling and search logic directly, so I can run `pytest` without opening the Streamlit app every time.
+**Saving.** `owner_to_dict` and `owner_from_dict` turn the owner, pets, and tasks into JSON and back. The app offers this as a download/upload backup.
 
-## Design Decisions
+## Design decisions
 
-Here's why I built it the way I did, and what I had to give up along the way.
+**I kept the logic separate from the UI.** Most of the real work lives in `pawpal_system.py` (scheduling, conflict checks, doc search, saving). `app.py` is mostly Streamlit forms and tables. That way I can test the important behavior with pytest without clicking through the app.
 
-**I kept the logic separate from the UI.** Most of the real work lives in `pawpal_system.py` (scheduling, conflict checks, doc search). `app.py` is mostly Streamlit forms and tables. I did this so I could test the important stuff with pytest without needing to click through the app.
+**I block bad schedules instead of fixing them automatically.** If a task is outside the owner's availability or overlaps another task, `add_todo()` and `generate_day_plan()` raise an error right away. I didn't want the app to silently move tasks around. I'd rather tell the user what's wrong and let them fix it.
 
-**I block bad schedules instead of fixing them automatically.** If a task is outside the owner's availability or overlaps another task, `add_todo()` and `generate_day_plan()` throw an error right away. I didn't want the app to silently move tasks around — I'd rather tell the user what's wrong and let them fix it.
+- *Trade-off:* The app won't suggest a better time slot, so the user has to find a valid time on their own.
 
-- *Trade-off:* The app won't suggest a better time slot. That's simpler to build, but the user has to figure out a valid time on their own.
+**I sort by time, not priority.** The user picks when each task happens, and the schedule shows tasks in chronological order. Priority is stored and shown in the table, but the scheduler doesn't reshuffle tasks based on it.
 
-**I sort by time, not priority.** The user picks when each task happens, and the schedule displays tasks in chronological order. Priority is still stored and shown in the table, but the scheduler doesn't reshuffle tasks based on it.
+- *Trade-off:* Priority is more of a label than something that changes the plan. I think that makes sense for pet care: you usually know meds need to happen at 8 AM, and you mainly need help catching conflicts.
 
-- *Trade-off:* Priority is more of a label than something that actually changes the plan. I think that makes sense for pet care — you usually know meds need to happen at 8 AM, and you mainly need help catching conflicts.
+**A day plan is a snapshot.** `DayPlan` keeps its own copy of the task list, so sorting or filtering a plan never reorders the owner's master list.
 
-**I used TF-IDF for doc search instead of an LLM.** The aftercare feature searches local markdown files with a simple TF-IDF index. If the query doesn't match well enough (`is_confident_query`), the app refuses to answer. I wanted something that works offline, doesn't need an API key, and is easy to test.
+**I used TF-IDF for doc search instead of an LLM.** The aftercare search uses a simple TF-IDF index over local markdown files. If the query doesn't match well enough (`is_confident_query`), the app refuses to answer. I wanted something that works offline, doesn't need an API key, and is easy to test.
 
-- *Trade-off:* It only catches keyword matches, so something like "my dog threw up" might not find a section about vomiting. For a small set of docs though, I think that's okay.
+- *Trade-off:* It only catches keyword matches, so a question like "my dog threw up" might not find a section about vomiting.
 
-**Filtering doesn't trim tasks when you're overbooked.** `Scheduler.filter_tasks()` can filter by pet or status, but it doesn't drop tasks when the total duration is longer than the owner's available window.
+**Backups instead of a database.** The app doesn't store anyone's data on a server. You download a JSON backup and upload it to pick up where you left off.
 
-- *Trade-off:* The schedule might show more tasks than you actually have time for. I figured it's better to show everything and let the owner decide what to skip, rather than hiding tasks.
+- *Trade-off:* If you close the tab without downloading a backup, your changes are gone.
 
+**Overbooked days aren't trimmed.** `Scheduler.filter_tasks()` filters by pet or status, but it doesn't drop tasks when the total time is longer than your available window.
+
+- *Trade-off:* The schedule might show more than you have time for. I'd rather show everything and let the owner decide what to skip than hide tasks.
+
+## Limitations and next steps
+
+- Tasks are scheduled for today only. There are no recurring tasks yet (for example, "medication every 12 hours for 7 days").
+- The aftercare search only covers the four built-in guides. You can't add your own vet's instructions yet.
+- Aftercare guides are general information and not a substitute for advice from a veterinarian.
+
+## Project files
+
+| File | What it does |
+|------|--------------|
+| `app.py` | Streamlit web app |
+| `pawpal_system.py` | Scheduling, guardrails, aftercare search, save/load |
+| `main.py` | Command-line demo |
+| `tests/test_pawpal.py` | Test suite |
+| `docs/` | Aftercare guides used by the search |
+| `diagrams/` | System and UML diagrams (Mermaid) |
+| `reflection.md` | Project reflection |
+| `ai_interactions.md` | Notes on working with AI tools |

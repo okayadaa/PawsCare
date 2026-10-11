@@ -15,6 +15,8 @@ from pawpal_system import (
     ToDo,
     WEEKDAYS,
     availability_conflicts,
+    owner_from_dict,
+    owner_to_dict,
     build_doc_search_index,
     get_aftercare_headings,
     load_aftercare_sections,
@@ -24,6 +26,8 @@ from pawpal_system import (
 )
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
+# A fixed Monday, so tests that use a weekday-only window pass on any day.
+MONDAY = date(2026, 6, 22)
 
 
 def _weekday_availability() -> AvailabilityWindow:
@@ -47,10 +51,10 @@ def test_adding_task_increases_pet_task_count():
 
     assert len(owner.get_tasks_for_pet(buddy)) == 0
 
-    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy))
+    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy), MONDAY)
     assert len(owner.get_tasks_for_pet(buddy)) == 1
 
-    owner.add_todo(ToDo("Feed breakfast", 2, 15, "11:00", buddy))
+    owner.add_todo(ToDo("Feed breakfast", 2, 15, "11:00", buddy), MONDAY)
     assert len(owner.get_tasks_for_pet(buddy)) == 2
 
 
@@ -60,7 +64,7 @@ def test_add_todo_blocks_outside_availability():
     owner.add_pet(buddy)
 
     with pytest.raises(AvailabilityError, match="before your window"):
-        owner.add_todo(ToDo("Morning walk", 3, 30, "08:00", buddy))
+        owner.add_todo(ToDo("Morning walk", 3, 30, "08:00", buddy), MONDAY)
 
     assert len(owner.todos) == 0
 
@@ -103,13 +107,14 @@ def test_sort_by_priority_orders_high_before_low():
     owner = Owner("Alex", _weekday_availability())
     buddy = PetInfo("Buddy", 3, "Golden Retriever")
     owner.add_pet(buddy)
-    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy))
-    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy))
-    owner.add_todo(ToDo("Lunch feeding", 2, 15, "12:00", buddy))
+    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Lunch feeding", 2, 15, "12:00", buddy), MONDAY)
 
-    DayPlan(date(2026, 6, 22), owner).sort_by_priority()
+    plan = DayPlan(MONDAY, owner)
+    plan.sort_by_priority()
 
-    assert [todo.task for todo in owner.todos] == [
+    assert [todo.task for todo in plan.tasks] == [
         "Morning walk",
         "Lunch feeding",
         "Afternoon play",
@@ -120,9 +125,9 @@ def test_sort_by_time_orders_tasks_chronologically():
     owner = Owner("Alex", _weekday_availability())
     buddy = PetInfo("Buddy", 3, "Golden Retriever")
     owner.add_pet(buddy)
-    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy))
-    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy))
-    owner.add_todo(ToDo("Lunch feeding", 2, 15, "12:00", buddy))
+    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Lunch feeding", 2, 15, "12:00", buddy), MONDAY)
 
     sorted_tasks = Scheduler.sort_by_time(owner.todos)
 
@@ -155,8 +160,8 @@ def test_filter_tasks_by_pet_name():
     luna = PetInfo("Luna", 5, "Siamese")
     owner.add_pet(buddy)
     owner.add_pet(luna)
-    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy))
-    owner.add_todo(ToDo("Play session", 1, 20, "12:00", luna))
+    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Play session", 1, 20, "12:00", luna), MONDAY)
 
     buddy_tasks = Scheduler.filter_tasks(owner.todos, pet_name="Buddy")
 
@@ -180,10 +185,10 @@ def test_add_todo_blocks_overlapping_tasks():
     owner = Owner("Alex", _weekday_availability())
     buddy = PetInfo("Buddy", 3, "Golden Retriever")
     owner.add_pet(buddy)
-    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy))
+    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy), MONDAY)
 
     with pytest.raises(ScheduleConflictError, match="overlaps with"):
-        owner.add_todo(ToDo("Grooming", 2, 30, "10:15", buddy))
+        owner.add_todo(ToDo("Grooming", 2, 30, "10:15", buddy), MONDAY)
 
     assert len(owner.todos) == 1
 
@@ -321,9 +326,131 @@ def test_generate_day_plan_sorts_by_time():
     owner = Owner("Alex", _weekday_availability())
     buddy = PetInfo("Buddy", 3, "Golden Retriever")
     owner.add_pet(buddy)
-    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy))
-    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy))
+    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy), MONDAY)
 
-    owner.generate_day_plan(date(2026, 6, 22))
+    plan = owner.generate_day_plan(MONDAY)
 
-    assert [todo.task for todo in owner.todos] == ["Morning walk", "Afternoon play"]
+    assert [todo.task for todo in plan.tasks] == ["Morning walk", "Afternoon play"]
+    # Building a plan must not reorder the owner's own task list.
+    assert [todo.task for todo in owner.todos] == ["Afternoon play", "Morning walk"]
+
+
+def test_get_pet_info_describes_pet():
+    assert PetInfo("Buddy", 3, "Golden Retriever", "dog").get_pet_info() == (
+        "Buddy (dog, Golden Retriever), 3 years old"
+    )
+    assert PetInfo("Luna", 1).get_pet_info() == "Luna, 1 year old"
+
+
+def test_add_pet_rejects_duplicate_and_empty_names():
+    owner = Owner("Alex", _weekday_availability())
+    owner.add_pet(PetInfo("Buddy", 3))
+
+    with pytest.raises(ValueError, match="already have a pet"):
+        owner.add_pet(PetInfo("buddy", 1))
+    with pytest.raises(ValueError, match="can't be empty"):
+        owner.add_pet(PetInfo("   ", 1))
+
+    assert len(owner.pets) == 1
+
+
+def test_remove_todo_deletes_only_that_task():
+    owner = Owner("Alex", _weekday_availability())
+    buddy = PetInfo("Buddy", 3)
+    owner.add_pet(buddy)
+    walk = ToDo("Morning walk", 3, 30, "10:00", buddy)
+    feed = ToDo("Feed breakfast", 2, 15, "11:00", buddy)
+    owner.add_todo(walk, MONDAY)
+    owner.add_todo(feed, MONDAY)
+
+    owner.remove_todo(walk)
+
+    assert owner.todos == [feed]
+
+
+def test_day_plan_totals_count_only_its_own_tasks():
+    owner = Owner("Alex", _weekday_availability())
+    buddy = PetInfo("Buddy", 3)
+    owner.add_pet(buddy)
+    walk = ToDo("Morning walk", 3, 30, "10:00", buddy)
+    feed = ToDo("Feed breakfast", 2, 15, "11:00", buddy)
+    owner.add_todo(walk, MONDAY)
+    owner.add_todo(feed, MONDAY)
+    feed.mark_complete()
+
+    plan = owner.generate_day_plan(MONDAY)
+    assert plan.total_duration == 45
+    assert plan.remaining_duration == 30
+
+    plan.tasks = Scheduler.filter_tasks(plan.tasks, status="pending")
+    assert plan.total_duration == 30
+
+
+def test_display_schedule_returns_rows_in_time_order():
+    owner = Owner("Alex", _weekday_availability())
+    buddy = PetInfo("Buddy", 3)
+    owner.add_pet(buddy)
+    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy), MONDAY)
+
+    rows = owner.generate_day_plan(MONDAY).display_schedule()
+
+    assert [row["task"] for row in rows] == ["Morning walk", "Afternoon play"]
+    assert rows[0] == {
+        "time": "9:00 AM",
+        "pet": "Buddy",
+        "task": "Morning walk",
+        "priority": "high",
+        "duration_minutes": 30,
+        "status": "pending",
+    }
+
+
+def test_save_and_load_round_trip_keeps_everything():
+    owner = Owner("Alex", _weekday_availability())
+    buddy = PetInfo("Buddy", 3, "Golden Retriever", "dog")
+    luna = PetInfo("Luna", 5, "Siamese", "cat")
+    owner.add_pet(buddy)
+    owner.add_pet(luna)
+    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy), MONDAY)
+    meds = ToDo("Give meds", 3, 5, "12:00", luna)
+    owner.add_todo(meds, MONDAY)
+    meds.mark_complete()
+
+    restored = owner_from_dict(owner_to_dict(owner))
+
+    assert restored.name == "Alex"
+    assert restored.availability == owner.availability
+    assert [pet.get_pet_info() for pet in restored.pets] == [
+        pet.get_pet_info() for pet in owner.pets
+    ]
+    assert owner_to_dict(restored) == owner_to_dict(owner)
+    # Tasks point at the restored pet objects, so per-pet lookups still work.
+    assert [t.task for t in restored.get_tasks_for_pet(restored.pets[1])] == ["Give meds"]
+
+
+def test_load_rejects_files_that_are_not_pawpal_saves():
+    with pytest.raises(ValueError, match="isn't a PawPal"):
+        owner_from_dict({"hello": "world"})
+
+    broken = owner_to_dict(Owner("Alex", _weekday_availability()))
+    del broken["pets"]
+    with pytest.raises(ValueError, match="missing data"):
+        owner_from_dict(broken)
+
+
+def test_load_rejects_task_for_unknown_pet():
+    data = owner_to_dict(Owner("Alex", _weekday_availability()))
+    data["todos"].append(
+        {
+            "task": "Walk",
+            "priority": 1,
+            "duration_minutes": 10,
+            "time": "10:00",
+            "pet": "Ghost",
+            "status": "pending",
+        }
+    )
+    with pytest.raises(ValueError, match="unknown pet"):
+        owner_from_dict(data)
