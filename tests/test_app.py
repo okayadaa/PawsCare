@@ -96,3 +96,40 @@ def test_database_outage_stops_instead_of_showing_empty_plan(tmp_path):
     assert not at.exception, at.exception
     assert "couldn't load your saved data" in at.error[0].value
     assert not any(field.label == "Pet name" for field in at.text_input)
+
+
+def test_weekday_owner_can_add_tasks_any_day_and_schedule_defaults_to_weekday(db_url):
+    """Regression test for the 'can't add tasks on a Sunday' bug.
+
+    Runs the same way no matter what day the tests run on.
+    """
+    at = _app(db_url, auth=False).run()
+    at.selectbox(key="days_preset").select("Weekdays (Mon–Fri)").run()
+    _add_pet(at, "Bella")
+
+    _by_label(at.text_input, "Task").input("Morning food")
+    _by_label(at.text_input, "Time").input("10:00 AM")
+    _by_label(at.button, "Add task").click().run()
+
+    assert not at.exception, at.exception
+    assert not at.error, [e.value for e in at.error]
+    assert [t.task for t in at.session_state["owner"].todos] == ["Morning food"]
+
+    # The schedule date starts on a weekday, so it can always be generated.
+    plan_date = _by_label(at.date_input, "Schedule for").value
+    assert plan_date.weekday() < 5
+    _by_label(at.button, "Generate schedule").click().run()
+    assert at.table[0].value["task"].tolist() == ["Morning food"]
+
+
+def test_done_then_undo(db_url):
+    at = _app(db_url, auth=False).run()
+    _add_pet(at, "Bella")
+    _by_label(at.button, "Add task").click().run()
+
+    _by_label(at.button, "Done").click().run()
+    assert at.session_state["owner"].todos[0].completed_on is not None
+    assert any(button.label == "Undo" for button in at.button)
+
+    _by_label(at.button, "Undo").click().run()
+    assert at.session_state["owner"].todos[0].completed_on is None

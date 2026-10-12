@@ -1,6 +1,7 @@
 import json
-from datetime import date, time
+from datetime import date, datetime, time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,6 +19,7 @@ from pawpal_system import (
     ScheduleConflictError,
     Scheduler,
     ToDo,
+    describe_days,
     format_time,
     load_aftercare_sections,
     owner_from_dict,
@@ -60,6 +62,18 @@ def has_secret_section(name: str) -> bool:
         return name in st.secrets
     except Exception:  # no secrets file at all
         return False
+
+
+def user_today() -> date:
+    """Today's date where the visitor is, not where the server is.
+
+    Hosted servers usually run on UTC, which is already "tomorrow" for
+    New York by 8 PM. The browser reports its timezone, so use that.
+    """
+    try:
+        return datetime.now(ZoneInfo(st.context.timezone)).date()
+    except Exception:  # timezone unknown (e.g. in tests)
+        return date.today()
 
 
 def parse_time_field(label: str, value: time, key: str) -> time:
@@ -182,10 +196,15 @@ with st.sidebar:
         st.button("Sign out", on_click=st.logout, use_container_width=True)
         st.caption("Your pets and tasks are saved automatically.")
     else:
+        where = (
+            "your database"
+            if database_url != LOCAL_DATABASE_URL
+            else "`pawpal_local.db` on this computer"
+        )
         st.warning(
             "**Local mode.** Sign-in isn't set up, so everyone using this copy "
-            "of the app shares the same data, saved in `pawpal_local.db`. "
-            "That's fine on your own computer, but don't deploy it this way."
+            f"of the app shares the same data, saved in {where}. "
+            "That's fine for testing, but don't deploy it this way."
         )
 
     st.subheader("Backup")
@@ -317,8 +336,13 @@ else:
 
 st.divider()
 
-st.subheader("Schedule a task")
-st.caption("Each task belongs to one pet and happens at a set time today.")
+today = user_today()
+
+st.subheader("Daily tasks")
+st.caption(
+    "Tasks repeat every day you're available, like \"Breakfast at 8:00 AM.\" "
+    "Checkmarks reset each day."
+)
 
 if not owner.pets:
     st.warning("Add at least one pet before scheduling tasks.")
@@ -354,7 +378,7 @@ else:
                 selected_pet,
             )
             try:
-                owner.add_todo(new_todo, date.today())
+                owner.add_todo(new_todo)
             except (AvailabilityError, ScheduleConflictError) as exc:
                 st.error(str(exc))
             else:
@@ -362,8 +386,9 @@ else:
 
     pet_tasks = Scheduler.sort_by_time(owner.get_tasks_for_pet(selected_pet))
     if pet_tasks:
-        st.write(f"Tasks for {selected_pet.name}:")
+        st.write(f"{selected_pet.name}'s tasks (today, {today:%A}):")
         for index, todo in enumerate(pet_tasks):
+            done_today = todo.status_on(today) == "complete"
             task_col, done_col, delete_col = st.columns([5, 1, 1])
             with task_col:
                 label = (
@@ -371,12 +396,14 @@ else:
                     f"({todo.duration_minutes} min, "
                     f"{PRIORITY_LABELS.get(todo.priority, todo.priority)} priority)"
                 )
-                st.write(f"~~{label}~~ ✅" if todo.status == "complete" else label)
+                st.write(f"~~{label}~~ ✅" if done_today else label)
             with done_col:
-                if todo.status == "pending" and st.button(
-                    "Done", key=f"complete_{selected_pet.name}_{index}"
-                ):
-                    todo.mark_complete()
+                if done_today:
+                    if st.button("Undo", key=f"undo_{selected_pet.name}_{index}"):
+                        todo.mark_incomplete()
+                        st.rerun()
+                elif st.button("Done", key=f"complete_{selected_pet.name}_{index}"):
+                    todo.mark_complete(on=today)
                     st.rerun()
             with delete_col:
                 if st.button("Delete", key=f"delete_{selected_pet.name}_{index}"):
@@ -387,8 +414,24 @@ else:
 
 st.divider()
 
-st.subheader("Today's schedule")
-st.caption("All your tasks for today, in time order.")
+st.subheader("Schedule")
+st.caption("All your tasks for one day, in time order.")
+
+default_day = owner.next_available_day(today) or today
+plan_date = st.date_input(
+    "Schedule for",
+    value=default_day,
+    min_value=today,
+    format="MM/DD/YYYY",
+    help="Starts on your next available day.",
+)
+available = owner.is_available_on(plan_date)
+if not available:
+    st.info(
+        f"You're not available on {plan_date:%A}s, so there's nothing to "
+        f"schedule. Your available days are {describe_days(owner.availability.days)}. "
+        "Pick another date or change your days above."
+    )
 
 filter_col1, filter_col2 = st.columns(2)
 with filter_col1:
@@ -401,12 +444,12 @@ with filter_col2:
         key="schedule_pet_filter",
     )
 
-if st.button("Generate schedule"):
+if st.button("Generate schedule", disabled=not available):
     if not owner.get_all_pet_tasks():
         st.warning("Add at least one task before generating a schedule.")
     else:
         try:
-            plan = owner.generate_day_plan(date.today())
+            plan = owner.generate_day_plan(plan_date)
         except (AvailabilityError, ScheduleConflictError) as exc:
             st.error(str(exc))
         else:
@@ -414,6 +457,7 @@ if st.button("Generate schedule"):
                 plan.tasks,
                 status=None if status_filter == "all" else status_filter,
                 pet_name=None if pet_filter == "all" else pet_filter,
+                on=plan_date,
             )
             count = len(plan.tasks)
             if count == 0:

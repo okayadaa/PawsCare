@@ -18,7 +18,7 @@ def _sample_owner(name: str = "Sam", pet_name: str = "Mochi") -> Owner:
     owner = Owner(name, AvailabilityWindow(set(ALL_DAYS), time(8, 0), time(20, 0)))
     pet = PetInfo(pet_name, 2, "Shiba Inu", "dog")
     owner.add_pet(pet)
-    owner.add_todo(ToDo("Morning walk", 3, 30, "9:00 AM", pet), MONDAY)
+    owner.add_todo(ToDo("Morning walk", 3, 30, "9:00 AM", pet))
     return owner
 
 

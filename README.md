@@ -8,9 +8,9 @@ It also includes a searchable set of aftercare guides (spay/neuter, dental, woun
 
 ## Features
 
-- **Pets and tasks.** Add multiple pets, then schedule tasks for each with a time, duration, and priority. Mark tasks done or delete them.
+- **Pets and daily tasks.** Add multiple pets, then give each a daily routine: tasks with a time, duration, and priority, like "Breakfast at 8:00 AM." Check tasks off (checkmarks reset each day), undo, or delete them.
 - **Guardrails.** A task is rejected if it starts before or ends after your available hours, or overlaps another task, with a message explaining what's wrong.
-- **Daily schedule.** One time-ordered plan across all your pets, filterable by pet or status, showing total and remaining minutes.
+- **Schedule for any day.** Pick a date (it starts on your next available day) to see one time-ordered plan across all your pets, filterable by pet or status, with total and remaining minutes.
 - **Aftercare search.** A TF-IDF search over the guides in `docs/`, with a confidence check that answers "I'm not so sure" rather than returning a weak match.
 - **Accounts and automatic saving.** Sign in with Google and your pets and tasks are saved to a PostgreSQL database, so they're there next time on any device. Each account only sees its own data.
 - **Your data, your control.** Download a copy of your data as JSON, restore it later, or delete everything saved for your account.
@@ -106,6 +106,13 @@ flowchart TB
 
 - *Trade-off:* The app won't suggest a better time slot, so the user has to find a valid time on their own.
 
+**Tasks are a daily routine, not one-off events.** Pet care repeats: breakfast at 8 AM happens every day. So adding a task only checks that it fits your hours and doesn't overlap another task. The day of the week only matters when you pick a date to schedule. Each task remembers the date it was last checked off, so checkmarks reset on their own each day.
+
+- *Trade-off:* One-off tasks (a vet visit next Thursday) and limited-time tasks (meds for 7 days) aren't supported yet.
+- *Why it changed:* The first version scheduled every task for "today" and checked today's day of the week, so someone available only on weekdays couldn't add any task on a weekend. A regression test now covers that case.
+
+**"Today" means today where the user is.** Hosted servers run on UTC, which is already tomorrow in New York by 8 PM. The app uses the browser's timezone to decide what "today" is, so checkmarks reset at the user's midnight.
+
 **I sort by time, not priority.** The user picks when each task happens, and the schedule shows tasks in chronological order. Priority is stored and shown in the table, but the scheduler doesn't reshuffle tasks based on it.
 
 - *Trade-off:* Priority is more of a label than something that changes the plan. I think that makes sense for pet care: you usually know meds need to happen at 8 AM, and you mainly need help catching conflicts.
@@ -128,7 +135,7 @@ flowchart TB
 
 ## Limitations and next steps
 
-- Tasks are scheduled for today only. There are no recurring tasks yet (for example, "medication every 12 hours for 7 days").
+- Every task repeats daily. There are no one-off or limited-time tasks yet (for example, "medication every 12 hours for 7 days").
 - The aftercare search only covers the four built-in guides. You can't add your own vet's instructions yet.
 - Aftercare guides are general information and not a substitute for advice from a veterinarian.
 

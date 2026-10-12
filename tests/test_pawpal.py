@@ -1,4 +1,4 @@
-from datetime import date, time
+from datetime import date, time, timedelta
 from pathlib import Path
 
 import pytest
@@ -13,6 +13,7 @@ from pawpal_system import (
     ScheduleConflictError,
     Scheduler,
     ToDo,
+    ALL_DAYS,
     WEEKDAYS,
     availability_conflicts,
     owner_from_dict,
@@ -28,6 +29,7 @@ from pawpal_system import (
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
 # A fixed Monday, so tests that use a weekday-only window pass on any day.
 MONDAY = date(2026, 6, 22)
+SUNDAY = date(2026, 6, 28)
 
 
 def _weekday_availability() -> AvailabilityWindow:
@@ -51,10 +53,10 @@ def test_adding_task_increases_pet_task_count():
 
     assert len(owner.get_tasks_for_pet(buddy)) == 0
 
-    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy))
     assert len(owner.get_tasks_for_pet(buddy)) == 1
 
-    owner.add_todo(ToDo("Feed breakfast", 2, 15, "11:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Feed breakfast", 2, 15, "11:00", buddy))
     assert len(owner.get_tasks_for_pet(buddy)) == 2
 
 
@@ -64,7 +66,7 @@ def test_add_todo_blocks_outside_availability():
     owner.add_pet(buddy)
 
     with pytest.raises(AvailabilityError, match="before your window"):
-        owner.add_todo(ToDo("Morning walk", 3, 30, "08:00", buddy), MONDAY)
+        owner.add_todo(ToDo("Morning walk", 3, 30, "08:00", buddy))
 
     assert len(owner.todos) == 0
 
@@ -107,9 +109,9 @@ def test_sort_by_priority_orders_high_before_low():
     owner = Owner("Alex", _weekday_availability())
     buddy = PetInfo("Buddy", 3, "Golden Retriever")
     owner.add_pet(buddy)
-    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy), MONDAY)
-    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy), MONDAY)
-    owner.add_todo(ToDo("Lunch feeding", 2, 15, "12:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy))
+    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy))
+    owner.add_todo(ToDo("Lunch feeding", 2, 15, "12:00", buddy))
 
     plan = DayPlan(MONDAY, owner)
     plan.sort_by_priority()
@@ -125,9 +127,9 @@ def test_sort_by_time_orders_tasks_chronologically():
     owner = Owner("Alex", _weekday_availability())
     buddy = PetInfo("Buddy", 3, "Golden Retriever")
     owner.add_pet(buddy)
-    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy), MONDAY)
-    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy), MONDAY)
-    owner.add_todo(ToDo("Lunch feeding", 2, 15, "12:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy))
+    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy))
+    owner.add_todo(ToDo("Lunch feeding", 2, 15, "12:00", buddy))
 
     sorted_tasks = Scheduler.sort_by_time(owner.todos)
 
@@ -160,8 +162,8 @@ def test_filter_tasks_by_pet_name():
     luna = PetInfo("Luna", 5, "Siamese")
     owner.add_pet(buddy)
     owner.add_pet(luna)
-    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy), MONDAY)
-    owner.add_todo(ToDo("Play session", 1, 20, "12:00", luna), MONDAY)
+    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy))
+    owner.add_todo(ToDo("Play session", 1, 20, "12:00", luna))
 
     buddy_tasks = Scheduler.filter_tasks(owner.todos, pet_name="Buddy")
 
@@ -185,10 +187,10 @@ def test_add_todo_blocks_overlapping_tasks():
     owner = Owner("Alex", _weekday_availability())
     buddy = PetInfo("Buddy", 3, "Golden Retriever")
     owner.add_pet(buddy)
-    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy))
 
     with pytest.raises(ScheduleConflictError, match="overlaps with"):
-        owner.add_todo(ToDo("Grooming", 2, 30, "10:15", buddy), MONDAY)
+        owner.add_todo(ToDo("Grooming", 2, 30, "10:15", buddy))
 
     assert len(owner.todos) == 1
 
@@ -326,8 +328,8 @@ def test_generate_day_plan_sorts_by_time():
     owner = Owner("Alex", _weekday_availability())
     buddy = PetInfo("Buddy", 3, "Golden Retriever")
     owner.add_pet(buddy)
-    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy), MONDAY)
-    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy))
+    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy))
 
     plan = owner.generate_day_plan(MONDAY)
 
@@ -361,8 +363,8 @@ def test_remove_todo_deletes_only_that_task():
     owner.add_pet(buddy)
     walk = ToDo("Morning walk", 3, 30, "10:00", buddy)
     feed = ToDo("Feed breakfast", 2, 15, "11:00", buddy)
-    owner.add_todo(walk, MONDAY)
-    owner.add_todo(feed, MONDAY)
+    owner.add_todo(walk)
+    owner.add_todo(feed)
 
     owner.remove_todo(walk)
 
@@ -375,15 +377,15 @@ def test_day_plan_totals_count_only_its_own_tasks():
     owner.add_pet(buddy)
     walk = ToDo("Morning walk", 3, 30, "10:00", buddy)
     feed = ToDo("Feed breakfast", 2, 15, "11:00", buddy)
-    owner.add_todo(walk, MONDAY)
-    owner.add_todo(feed, MONDAY)
-    feed.mark_complete()
+    owner.add_todo(walk)
+    owner.add_todo(feed)
+    feed.mark_complete(on=MONDAY)
 
     plan = owner.generate_day_plan(MONDAY)
     assert plan.total_duration == 45
     assert plan.remaining_duration == 30
 
-    plan.tasks = Scheduler.filter_tasks(plan.tasks, status="pending")
+    plan.tasks = Scheduler.filter_tasks(plan.tasks, status="pending", on=MONDAY)
     assert plan.total_duration == 30
 
 
@@ -391,8 +393,8 @@ def test_display_schedule_returns_rows_in_time_order():
     owner = Owner("Alex", _weekday_availability())
     buddy = PetInfo("Buddy", 3)
     owner.add_pet(buddy)
-    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy), MONDAY)
-    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Afternoon play", 1, 20, "14:00", buddy))
+    owner.add_todo(ToDo("Morning walk", 3, 30, "09:00", buddy))
 
     rows = owner.generate_day_plan(MONDAY).display_schedule()
 
@@ -413,9 +415,9 @@ def test_save_and_load_round_trip_keeps_everything():
     luna = PetInfo("Luna", 5, "Siamese", "cat")
     owner.add_pet(buddy)
     owner.add_pet(luna)
-    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy), MONDAY)
+    owner.add_todo(ToDo("Morning walk", 3, 30, "10:00", buddy))
     meds = ToDo("Give meds", 3, 5, "12:00", luna)
-    owner.add_todo(meds, MONDAY)
+    owner.add_todo(meds)
     meds.mark_complete()
 
     restored = owner_from_dict(owner_to_dict(owner))
@@ -454,3 +456,132 @@ def test_load_rejects_task_for_unknown_pet():
     )
     with pytest.raises(ValueError, match="unknown pet"):
         owner_from_dict(data)
+
+
+# --- Tasks are a daily routine -------------------------------------------
+
+
+def test_add_todo_works_on_a_day_you_are_not_available():
+    """Regression test: on a Sunday, a weekday-only owner could add no tasks.
+
+    Adding a task only checks the time of day now, never today's date.
+    """
+    owner = Owner("Ada", AvailabilityWindow(WEEKDAYS, time(8, 0), time(11, 0)))
+    bella = PetInfo("Bella", 4)
+    owner.add_pet(bella)
+
+    owner.add_todo(ToDo("Morning food", 3, 31, "10:00 AM", bella))
+
+    assert len(owner.todos) == 1
+
+
+def test_add_todo_still_checks_the_time_window():
+    owner = Owner("Ada", AvailabilityWindow(WEEKDAYS, time(8, 0), time(11, 0)))
+    bella = PetInfo("Bella", 4)
+    owner.add_pet(bella)
+
+    with pytest.raises(AvailabilityError, match="ends at 11:30 AM"):
+        owner.add_todo(ToDo("Long walk", 2, 60, "10:30 AM", bella))
+
+
+def test_task_cannot_run_past_midnight():
+    owner = Owner("Ada", AvailabilityWindow(ALL_DAYS, time(0, 0), time(23, 59)))
+    owner.add_pet(PetInfo("Bella", 4))
+
+    with pytest.raises(AvailabilityError, match="past midnight"):
+        owner.add_todo(ToDo("Night walk", 1, 60, "11:30 PM", owner.pets[0]))
+
+
+def test_generate_day_plan_explains_unavailable_day():
+    owner = Owner("Ada", _weekday_availability())
+    owner.add_pet(PetInfo("Bella", 4))
+    owner.add_todo(ToDo("Morning food", 3, 30, "10:00 AM", owner.pets[0]))
+
+    with pytest.raises(AvailabilityError, match="not available on Sundays"):
+        owner.generate_day_plan(SUNDAY)
+
+    assert len(owner.generate_day_plan(MONDAY).tasks) == 1
+
+
+def test_next_available_day_skips_to_monday():
+    owner = Owner("Ada", _weekday_availability())
+
+    assert owner.next_available_day(SUNDAY) == SUNDAY + timedelta(days=1)
+    assert owner.next_available_day(MONDAY) == MONDAY
+
+
+def test_next_available_day_is_none_without_any_days():
+    owner = Owner("Ada", AvailabilityWindow(set(), time(9, 0), time(17, 0)))
+
+    assert owner.next_available_day(MONDAY) is None
+
+
+def test_completion_only_counts_for_that_day():
+    walk = ToDo("Morning walk", 3, 30, "10:00")
+    tuesday = MONDAY + timedelta(days=1)
+
+    walk.mark_complete(on=MONDAY)
+
+    assert walk.status_on(MONDAY) == "complete"
+    assert walk.status_on(tuesday) == "pending"
+
+    walk.mark_incomplete()
+    assert walk.status_on(MONDAY) == "pending"
+
+
+def test_day_plan_shows_status_for_its_own_date():
+    owner = Owner("Ada", _weekday_availability())
+    owner.add_pet(PetInfo("Bella", 4))
+    walk = ToDo("Morning walk", 3, 30, "10:00 AM", owner.pets[0])
+    owner.add_todo(walk)
+    walk.mark_complete(on=MONDAY)
+
+    monday_plan = owner.generate_day_plan(MONDAY)
+    tuesday_plan = owner.generate_day_plan(MONDAY + timedelta(days=1))
+
+    assert monday_plan.display_schedule()[0]["status"] == "complete"
+    assert monday_plan.remaining_duration == 0
+    assert tuesday_plan.display_schedule()[0]["status"] == "pending"
+    assert tuesday_plan.remaining_duration == 30
+
+
+def test_completed_task_still_blocks_its_time_slot():
+    owner = Owner("Ada", _weekday_availability())
+    owner.add_pet(PetInfo("Bella", 4))
+    walk = ToDo("Morning walk", 3, 30, "10:00 AM", owner.pets[0])
+    owner.add_todo(walk)
+    walk.mark_complete()
+
+    with pytest.raises(ScheduleConflictError, match="overlaps with"):
+        owner.add_todo(ToDo("Grooming", 2, 30, "10:15 AM", owner.pets[0]))
+
+
+def test_save_and_load_keeps_completion_date():
+    owner = Owner("Ada", _weekday_availability())
+    owner.add_pet(PetInfo("Bella", 4))
+    walk = ToDo("Morning walk", 3, 30, "10:00 AM", owner.pets[0])
+    owner.add_todo(walk)
+    walk.mark_complete(on=MONDAY)
+
+    restored = owner_from_dict(owner_to_dict(owner))
+
+    assert restored.todos[0].completed_on == MONDAY
+
+
+def test_load_accepts_older_saves_with_status_field():
+    data = owner_to_dict(Owner("Ada", _weekday_availability()))
+    data["pets"].append({"name": "Bella", "age": 4, "breed": "", "species": "dog"})
+    data["todos"].append(
+        {
+            "task": "Walk",
+            "priority": 1,
+            "duration_minutes": 10,
+            "time": "10:00",
+            "pet": "Bella",
+            "status": "pending",
+        }
+    )
+
+    restored = owner_from_dict(data)
+
+    assert restored.todos[0].completed_on is None

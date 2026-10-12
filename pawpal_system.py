@@ -48,17 +48,32 @@ class ToDo:
     duration_minutes: int
     availability: str
     pet: PetInfo | None = None
-    status: str = "pending"
+    completed_on: date | None = None
+
+    # Tasks are a daily routine ("Breakfast at 8:00 AM" happens every day),
+    # so a checkmark only counts for the day it was made. Instead of storing
+    # "complete", each task remembers the date it was last completed.
 
     @property
     def time(self) -> time:
         return parse_task_time(self.availability)
 
+    def status_on(self, day: date) -> str:
+        return "complete" if self.completed_on == day else "pending"
+
+    @property
+    def status(self) -> str:
+        """The task's status for today."""
+        return self.status_on(date.today())
+
     def set_priority(self, priority: int) -> None:
         self.priority = priority
 
-    def mark_complete(self) -> None:
-        self.status = "complete"
+    def mark_complete(self, on: date | None = None) -> None:
+        self.completed_on = on or date.today()
+
+    def mark_incomplete(self) -> None:
+        self.completed_on = None
 
 
 class AvailabilityError(ValueError):
@@ -89,19 +104,39 @@ class Owner:
     def remove_todo(self, todo: ToDo) -> None:
         self.todos = [existing for existing in self.todos if existing is not todo]
 
-    def add_todo(self, todo: ToDo, plan_date: date | None = None) -> None:
+    def add_todo(self, todo: ToDo) -> None:
+        """Add a daily task after checking it fits your hours and doesn't overlap.
+
+        Tasks repeat on every day you're available, so only the time of day
+        is checked here, not today's date.
+        """
         if todo.pet is not None and todo.pet not in self.pets:
             raise ValueError(
                 f"Pet {todo.pet.name!r} is not registered with this owner"
             )
-        when = plan_date or date.today()
-        conflicts = self.check_todo_availability(todo, when)
+        conflicts = self.check_time_window(todo)
         if conflicts:
             raise AvailabilityError(conflicts[0])
-        overlap = task_schedule_conflicts(self.todos + [todo], when)
+        overlap = task_schedule_conflicts(self.todos + [todo], date.today())
         if overlap:
             raise ScheduleConflictError(overlap[0])
         self.todos.append(todo)
+
+    def is_available_on(self, day: date) -> bool:
+        return day.weekday() in self.availability.days
+
+    def next_available_day(self, start: date) -> date | None:
+        """The first day on or after start that you're available, if any."""
+        for offset in range(7):
+            day = start + timedelta(days=offset)
+            if self.is_available_on(day):
+                return day
+        return None
+
+    def check_time_window(self, todo: ToDo) -> list[str]:
+        return time_window_conflicts(
+            self.availability, todo.availability, todo.duration_minutes, todo.task
+        )
 
     def get_tasks_for_pet(self, pet: PetInfo) -> list[ToDo]:
         return [todo for todo in self.todos if todo.pet is pet]
@@ -119,8 +154,13 @@ class Owner:
         )
 
     def generate_day_plan(self, plan_date: date) -> DayPlan:
+        if not self.is_available_on(plan_date):
+            raise AvailabilityError(
+                f"You're not available on {plan_date:%A}s. Your available days "
+                f"are {describe_days(self.availability.days)}."
+            )
         for todo in self.todos:
-            conflicts = self.check_todo_availability(todo, plan_date)
+            conflicts = self.check_time_window(todo)
             if conflicts:
                 raise AvailabilityError(
                     f"Cannot build schedule: {conflicts[0]}"
@@ -154,7 +194,9 @@ class DayPlan:
     @property
     def remaining_duration(self) -> int:
         return sum(
-            todo.duration_minutes for todo in self.tasks if todo.status != "complete"
+            todo.duration_minutes
+            for todo in self.tasks
+            if todo.status_on(self.date) != "complete"
         )
 
     def sort_by_priority(self) -> None:
@@ -172,7 +214,7 @@ class DayPlan:
                 "task": todo.task,
                 "priority": PRIORITY_LABELS.get(todo.priority, todo.priority),
                 "duration_minutes": todo.duration_minutes,
-                "status": todo.status,
+                "status": todo.status_on(self.date),
             }
             for todo in self.tasks
         ]
@@ -196,10 +238,13 @@ class Scheduler:
         *,
         status: str | None = None,
         pet_name: str | None = None,
+        on: date | None = None,
     ) -> list[ToDo]:
+        """Filter tasks by status on a given day (default today) and/or pet."""
         filtered = tasks
         if status is not None:
-            filtered = [todo for todo in filtered if todo.status == status]
+            day = on or date.today()
+            filtered = [todo for todo in filtered if todo.status_on(day) == status]
         if pet_name is not None:
             filtered = [
                 todo
@@ -253,6 +298,25 @@ def availability_conflicts(
     duration_minutes: int,
     task_name: str = "Task",
 ) -> list[str]:
+    """Check a task on a specific date: the day of the week and the time."""
+    conflicts: list[str] = []
+    if task_date.weekday() not in window.days:
+        conflicts.append(
+            f"{task_name} is on {task_date.strftime('%A')}, "
+            f"but you're only available {describe_days(window.days)}."
+        )
+    return conflicts + time_window_conflicts(
+        window, time_str, duration_minutes, task_name
+    )
+
+
+def time_window_conflicts(
+    window: AvailabilityWindow,
+    time_str: str,
+    duration_minutes: int,
+    task_name: str = "Task",
+) -> list[str]:
+    """Check that a task starts and ends inside your available hours."""
     try:
         start_time = parse_task_time(time_str)
     except (ValueError, IndexError):
@@ -262,20 +326,16 @@ def availability_conflicts(
         ]
 
     conflicts: list[str] = []
-    task_start = datetime.combine(task_date, start_time)
+    task_start = datetime.combine(date.today(), start_time)
     task_end = task_start + timedelta(minutes=duration_minutes)
     window_label = (
         f"{format_time(window.start)}–{format_time(window.end)} "
         f"on {describe_days(window.days)}"
     )
 
-    if task_date.weekday() not in window.days:
-        conflicts.append(
-            f"{task_name} is on {task_date.strftime('%A')}, "
-            f"but you're only available {describe_days(window.days)}."
-        )
-
-    if start_time < window.start:
+    if task_end.date() != task_start.date():
+        conflicts.append(f"{task_name} can't run past midnight.")
+    elif start_time < window.start:
         conflicts.append(
             f"{task_name} at {format_time(start_time)} is before your window "
             f"({window_label})."
@@ -609,12 +669,13 @@ def search_aftercare_docs(
 def task_schedule_conflicts(
     tasks: list[ToDo], plan_date: date
 ) -> list[str]:
-    active = [todo for todo in tasks if todo.status != "complete"]
+    # Every task repeats daily, so a task that's already done today still
+    # takes up its time slot tomorrow. All tasks count for overlaps.
     conflicts: list[str] = []
 
-    for index, first in enumerate(active):
+    for index, first in enumerate(tasks):
         first_start, first_end = _task_interval(first, plan_date)
-        for second in active[index + 1 :]:
+        for second in tasks[index + 1 :]:
             second_start, second_end = _task_interval(second, plan_date)
             if first_start < second_end and second_start < first_end:
                 conflicts.append(
@@ -660,7 +721,9 @@ def owner_to_dict(owner: Owner) -> dict:
                 "duration_minutes": todo.duration_minutes,
                 "time": todo.availability,
                 "pet": todo.pet.name if todo.pet else None,
-                "status": todo.status,
+                "completed_on": (
+                    todo.completed_on.isoformat() if todo.completed_on else None
+                ),
             }
             for todo in owner.todos
         ],
@@ -709,7 +772,9 @@ def owner_from_dict(data: dict) -> Owner:
                 int(todo_data["duration_minutes"]),
                 todo_data["time"],
                 pets_by_name.get(pet_name) if pet_name else None,
-                todo_data.get("status", "pending"),
+                date.fromisoformat(todo_data["completed_on"])
+                if todo_data.get("completed_on")
+                else None,
             )
             parse_task_time(todo.availability)  # reject unreadable times early
             # Saved tasks were already checked when they were added, and a
