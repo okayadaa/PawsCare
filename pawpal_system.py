@@ -734,11 +734,11 @@ def owner_from_dict(data: dict) -> Owner:
     """Rebuild an owner from data made by owner_to_dict.
 
     Raises ValueError with a readable message if the data is not a
-    PawPal+ save file.
+    PawsCare+ save file.
     """
     try:
         if data.get("version") != SAVE_FORMAT_VERSION:
-            raise ValueError("This isn't a PawPal+ save file (unknown version).")
+            raise ValueError("This isn't a PawsCare+ save file (unknown version).")
 
         owner_data = data["owner"]
         window = owner_data["availability"]

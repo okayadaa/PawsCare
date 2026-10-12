@@ -433,7 +433,7 @@ def test_save_and_load_round_trip_keeps_everything():
 
 
 def test_load_rejects_files_that_are_not_pawpal_saves():
-    with pytest.raises(ValueError, match="isn't a PawPal"):
+    with pytest.raises(ValueError, match="isn't a PawsCare"):
         owner_from_dict({"hello": "world"})
 
     broken = owner_to_dict(Owner("Alex", _weekday_availability()))

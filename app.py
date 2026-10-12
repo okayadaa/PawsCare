@@ -207,37 +207,61 @@ with st.sidebar:
             "That's fine for testing, but don't deploy it this way."
         )
 
-    st.subheader("Backup")
-    st.download_button(
-        "Download a copy of my data",
-        data=json.dumps(owner_to_dict(owner), indent=2),
-        file_name="pawscare_backup.json",
-        mime="application/json",
-        use_container_width=True,
-    )
-
-    uploaded = st.file_uploader("Restore from a backup", type="json")
-    if uploaded is not None and st.session_state.get("loaded_file_id") != uploaded.file_id:
-        try:
-            st.session_state.owner = owner_from_dict(json.loads(uploaded.getvalue()))
-        except (ValueError, json.JSONDecodeError) as exc:
-            st.error(f"Couldn't load that file: {exc}")
-        else:
-            st.session_state.loaded_file_id = uploaded.file_id
-            reset_owner_widgets()
-            st.rerun()
-    if st.session_state.get("loaded_file_id") and uploaded is not None:
-        st.success("Backup restored.")
-
     st.divider()
-    with st.expander("Start over or delete my data"):
+    with st.expander("Manage my data"):
+        # Download -------------------------------------------------------
+        st.caption("Download a copy of your pets and tasks to keep.")
+        st.download_button(
+            "Download a copy of my data",
+            data=json.dumps(owner_to_dict(owner), indent=2),
+            file_name="pawscare_backup.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+
+        # Restore --------------------------------------------------------
+        # Changing the uploader's key after a restore gives a fresh, empty
+        # uploader, so the same file isn't offered again.
+        uploader_key = f"restore_file_{st.session_state.get('restore_count', 0)}"
+        uploaded = st.file_uploader(
+            "Restore from a downloaded copy",
+            type="json",
+            key=uploader_key,
+            max_upload_size=1,
+        )
+        if uploaded is not None:
+            try:
+                restored = owner_from_dict(json.loads(uploaded.getvalue()))
+            except (ValueError, json.JSONDecodeError) as exc:
+                st.error(f"Couldn't read that file: {exc}")
+            else:
+                pets, tasks = len(restored.pets), len(restored.todos)
+                st.warning(
+                    f"This file has {pets} pet{'s' if pets != 1 else ''} and "
+                    f"{tasks} task{'s' if tasks != 1 else ''}. Restoring "
+                    "**replaces** all your current pets and tasks."
+                )
+                if st.button("Restore this copy", use_container_width=True):
+                    st.session_state.owner = restored
+                    st.session_state.restore_count = (
+                        st.session_state.get("restore_count", 0) + 1
+                    )
+                    st.session_state.just_restored = True
+                    reset_owner_widgets()
+                    st.rerun()
+        if st.session_state.pop("just_restored", False):
+            st.success("Restored.")
+
+        st.divider()
+
+        # Start over -----------------------------------------------------
         st.caption("Start over clears your pets and tasks but keeps your account.")
         if st.button("Start over", use_container_width=True):
             st.session_state.owner = new_owner(display_name)
-            st.session_state.pop("loaded_file_id", None)
             reset_owner_widgets()
             st.rerun()
 
+        # Delete ---------------------------------------------------------
         st.caption("Delete removes everything PawsCare+ has saved for you.")
         confirm_delete = st.checkbox("I understand this can't be undone")
         if st.button(
@@ -252,7 +276,7 @@ with st.sidebar:
                 print(f"Database delete failed: {exc!r}")
                 st.error("Couldn't delete your data right now. Please try again.")
             else:
-                for key in ("owner", "loaded_user_id", "last_saved", "loaded_file_id"):
+                for key in ("owner", "loaded_user_id", "last_saved"):
                     st.session_state.pop(key, None)
                 if AUTH_ENABLED:
                     st.logout()

@@ -13,7 +13,7 @@ It also includes a searchable set of aftercare guides (spay/neuter, dental, woun
 - **Schedule for any day.** Pick a date (it starts on your next available day) to see one time-ordered plan across all your pets, filterable by pet or status, with total and remaining minutes.
 - **Aftercare search.** A TF-IDF search over the guides in `docs/`, with a confidence check that answers "I'm not so sure" rather than returning a weak match.
 - **Accounts and automatic saving.** Sign in with Google and your pets and tasks are saved to a PostgreSQL database, so they're there next time on any device. Each account only sees its own data.
-- **Your data, your control.** Download a copy of your data as JSON, restore it later, or delete everything saved for your account.
+- **Your data, your control.** Under **Manage my data**: download a copy as JSON, restore it later (with a confirmation before anything is replaced), start over, or delete everything saved for your account.
 
 ## Running it
 
@@ -38,6 +38,14 @@ To turn on Google sign-in and a hosted database, copy `.streamlit/secrets.toml.e
 - `[auth]`: a Google OAuth client ID and secret from Google Cloud Console, plus a random `cookie_secret`.
 
 `secrets.toml` holds passwords, so it's listed in `.gitignore` and never pushed to GitHub. When deploying to Streamlit Community Cloud, paste the same contents into the app's **Secrets** setting instead.
+
+## Deploying
+
+PawsCare+ runs on [Streamlit Community Cloud](https://streamlit.io/cloud), with a free [Neon](https://neon.com) PostgreSQL database and Google sign-in.
+
+1. Deploy the repo from share.streamlit.io with `app.py` as the main file.
+2. In the app's **Settings → Secrets**, paste the same contents as your local `secrets.toml`, but set `redirect_uri` to `https://<your-app>.streamlit.app/oauth2callback`.
+3. In Google Cloud Console, add that same URL to the OAuth client's **Authorized redirect URIs**, and publish the app (Audience → Publish app) so any Google account can sign in.
 
 ## Testing
 
