@@ -282,3 +282,70 @@ def test_asking_about_a_pet_sends_its_vet_instructions(db_url):
     assert "VET INSTRUCTIONS: Bella's vet instructions" in message
     assert "Keep the cone on for 14 days." in message
     assert any(e.label == "Where this answer comes from" for e in at.expander)
+
+
+# --- Keyword search as a fallback, and simpler source headings ----------
+
+
+def _search_box_shown(at):
+    return any(f.label == "Search the guides by keyword" for f in at.text_input)
+
+
+def test_with_ai_there_are_no_tabs_and_no_keyword_box(db_url):
+    from tests.test_ai import FakeClaude
+
+    fake = FakeClaude({"covered": False, "answer": "x", "source_numbers": [], "call_vet": False})
+    at, patch = _ai_app(db_url, fake, api_key="key-no-tabs")
+    with patch:
+        at.run()
+
+    assert not at.tabs
+    assert not _search_box_shown(at)
+
+
+def test_keyword_search_appears_after_an_ai_failure_and_stays(db_url):
+    from tests.test_ai import FakeClaude
+
+    fake = FakeClaude(error=RuntimeError("503 overloaded"))
+    at, patch = _ai_app(db_url, fake, api_key="key-fallback")
+    with patch:
+        at.run()
+        _ask(at, "incision care")
+        assert _search_box_shown(at)
+
+        # Typing in the fallback search reruns the app; the box must stay.
+        at.text_input(key="doc_search_query").input("incision care").run()
+
+    assert _search_box_shown(at)
+    assert any(m.value == "### Incision Care" for m in at.markdown)
+
+
+def test_keyword_search_appears_when_the_daily_limit_is_used_up(db_url):
+    from tests.test_ai import FakeClaude
+
+    fake = FakeClaude({"covered": False, "answer": "x", "source_numbers": [], "call_vet": False})
+    at, patch = _ai_app(db_url, fake, api_key="key-limit-fallback", daily_limit=1)
+    with patch:
+        at.run()
+        _ask(at, "first")
+        assert not _search_box_shown(at)
+        _ask(at, "second")
+
+    assert _search_box_shown(at)
+
+
+def test_source_headings_show_only_the_subheading(db_url):
+    from tests.test_ai import FakeClaude
+
+    fake = FakeClaude({"covered": True, "answer": "14 days.", "source_numbers": [1, 2], "call_vet": False})
+    at, patch = _ai_app(db_url, fake, api_key="key-headings")
+    with patch:
+        at.run()
+        _add_pet(at, "Poppy")
+        _save_pasted_note(at, "Spay surgery discharge", "Cone for 21 days.")
+        _by_label(at.selectbox, "Which pet is this about?").select(0).run()
+        _ask(at, "How long is the cone on?")
+
+    headings = [m.value for m in at.markdown if m.value.startswith("**")]
+    assert "**🩺 Spay surgery discharge**" in headings
+    assert not any(" > " in h for h in headings)

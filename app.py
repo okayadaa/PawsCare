@@ -589,99 +589,14 @@ st.caption(
 
 doc_index = _cached_doc_index(str(DOCS_DIR), _docs_cache_key(DOCS_DIR))
 
-if AI_ENABLED:
-    ask_tab, search_tab = st.tabs(["Ask PawsCare+", "Search by keyword"])
-else:
-    ask_tab, search_tab = None, st.container()
 
-if ask_tab is not None:
-    with ask_tab:
-        with st.form("ask_form"):
-            pet_choices = [None] + list(range(len(owner.pets)))
-            asked_about = st.selectbox(
-                "Which pet is this about?",
-                pet_choices,
-                format_func=lambda i: "No specific pet (general guides only)"
-                if i is None
-                else owner.pets[i].name
-                + (" (has vet instructions)" if owner.pets[i].vet_notes else ""),
-            )
-            question = st.text_area(
-                "Ask about your pet's aftercare",
-                max_chars=ai.MAX_QUESTION_CHARS,
-                placeholder="e.g. My dog threw up the day after her spay surgery. Is that normal?",
-            )
-            asked = st.form_submit_button("Ask", type="primary")
-
-        if asked:
-            try:
-                used = ai_uses_on(get_engine(database_url), user_id, today)
-            except SQLAlchemyError as exc:
-                print(f"AI usage check failed: {exc!r}")
-                st.error("Couldn't check your question limit right now. Please try again.")
-            else:
-                if used >= AI_DAILY_LIMIT:
-                    st.warning(
-                        f"You've used all {AI_DAILY_LIMIT} questions for today. "
-                        "Try again tomorrow, or use the keyword search."
-                    )
-                else:
-                    pet = owner.pets[asked_about] if asked_about is not None else None
-                    try:
-                        with st.spinner("Reading the guides..."):
-                            result = ai.ask_aftercare(
-                                get_ai_client(ai_settings["api_key"]),
-                                question,
-                                doc_index,
-                                model=AI_MODEL,
-                                pet_name=pet.name if pet else None,
-                                vet_notes=pet.vet_notes if pet else None,
-                            )
-                    except ValueError as exc:
-                        st.warning(str(exc))
-                    except ai.AIError as exc:
-                        print(f"AI request failed: {exc!r}")  # visible in app logs
-                        st.error(
-                            "The AI helper isn't available right now. Please try "
-                            "again in a minute, or use the keyword search."
-                        )
-                    else:
-                        record_ai_use(get_engine(database_url), user_id, today)
-                        st.session_state.ai_answer = (question.strip(), result)
-
-        if "ai_answer" in st.session_state:
-            asked_question, result = st.session_state.ai_answer
-            if result.call_vet:
-                st.error("**Call your vet now.** What you described is something the guides say needs a vet.")
-            if result.covered:
-                st.info(result.answer)
-                with st.expander("Where this answer comes from"):
-                    for section in result.sources:
-                        marker = "🩺 " if section.from_vet else ""
-                        st.markdown(f"**{marker}{section.doc_title} > {as_plain(section.heading)}**")
-                        st.markdown(as_plain(section.content) if section.from_vet else section.content)
-                    show_sources(result.sources)
-            else:
-                st.warning(result.answer)
-
-        try:
-            left = max(0, AI_DAILY_LIMIT - ai_uses_on(get_engine(database_url), user_id, today))
-        except SQLAlchemyError:
-            left = None
-        st.caption(
-            ("" if left is None else f"{left} of {AI_DAILY_LIMIT} questions left today. ")
-            + "Answers are written by AI (Claude) using only the guides above, "
-            "and can be wrong. They're not veterinary advice. If you're worried, "
-            "call your vet."
-        )
-
-with search_tab:
+def keyword_search() -> None:
+    """The free, offline search over the guides. Shown when AI isn't available."""
     doc_query = st.text_input(
         "Search the guides by keyword",
         placeholder="e.g. incision care, vomiting, bandage",
         key="doc_search_query",
     )
-
     if doc_query.strip():
         response = search_aftercare(doc_query, DOCS_DIR, top_k=5, index=doc_index)
         if not response.confident:
@@ -692,11 +607,97 @@ with search_tab:
         else:
             for match in response.matches:
                 section = match.section
-                st.markdown(f"**From:** {section.doc_title or section.source_file}")
                 st.markdown(f"### {section.heading}")
                 st.markdown(section.content)
                 show_sources([section])
                 st.divider()
+
+
+if AI_ENABLED:
+    with st.form("ask_form"):
+        pet_choices = [None] + list(range(len(owner.pets)))
+        asked_about = st.selectbox(
+            "Which pet is this about?",
+            pet_choices,
+            format_func=lambda i: "No specific pet (general guides only)"
+            if i is None
+            else owner.pets[i].name
+            + (" (has vet instructions)" if owner.pets[i].vet_notes else ""),
+        )
+        question = st.text_area(
+            "Ask about your pet's aftercare",
+            max_chars=ai.MAX_QUESTION_CHARS,
+            placeholder="e.g. My dog threw up the day after her spay surgery. Is that normal?",
+        )
+        asked = st.form_submit_button("Ask", type="primary")
+
+    if asked:
+        try:
+            used = ai_uses_on(get_engine(database_url), user_id, today)
+        except SQLAlchemyError as exc:
+            print(f"AI usage check failed: {exc!r}")
+            st.error("Couldn't check your question limit right now. Please try again.")
+        else:
+            if used >= AI_DAILY_LIMIT:
+                st.warning(f"You've used all {AI_DAILY_LIMIT} questions for today.")
+                st.session_state.ai_unavailable = True
+            else:
+                pet = owner.pets[asked_about] if asked_about is not None else None
+                try:
+                    with st.spinner("Reading the guides..."):
+                        result = ai.ask_aftercare(
+                            get_ai_client(ai_settings["api_key"]),
+                            question,
+                            doc_index,
+                            model=AI_MODEL,
+                            pet_name=pet.name if pet else None,
+                            vet_notes=pet.vet_notes if pet else None,
+                        )
+                except ValueError as exc:
+                    st.warning(str(exc))
+                except ai.AIError as exc:
+                    print(f"AI request failed: {exc!r}")  # visible in app logs
+                    st.error("The AI helper isn't available right now.")
+                    st.session_state.ai_unavailable = True
+                else:
+                    record_ai_use(get_engine(database_url), user_id, today)
+                    st.session_state.ai_answer = (question.strip(), result)
+                    st.session_state.ai_unavailable = False
+
+    if "ai_answer" in st.session_state:
+        asked_question, result = st.session_state.ai_answer
+        if result.call_vet:
+            st.error("**Call your vet now.** What you described is something the guides say needs a vet.")
+        if result.covered:
+            st.info(result.answer)
+            with st.expander("Where this answer comes from"):
+                for section in result.sources:
+                    marker = "🩺 " if section.from_vet else ""
+                    st.markdown(f"**{marker}{as_plain(section.heading)}**")
+                    st.markdown(as_plain(section.content) if section.from_vet else section.content)
+                show_sources(result.sources)
+        else:
+            st.warning(result.answer)
+
+    try:
+        left = max(0, AI_DAILY_LIMIT - ai_uses_on(get_engine(database_url), user_id, today))
+    except SQLAlchemyError:
+        left = None
+    st.caption(
+        ("" if left is None else f"{left} of {AI_DAILY_LIMIT} questions left today. ")
+        + "Answers are written by AI (Claude) using only the guides and your "
+        "vet's instructions, and can be wrong. They're not veterinary advice. "
+        "If you're worried, call your vet."
+    )
+
+    # Graceful degradation: if the AI helper failed or the daily limit is
+    # used up, offer the free keyword search instead of a dead end. The flag
+    # is kept in session state so the search box stays while it's used.
+    if st.session_state.get("ai_unavailable"):
+        st.markdown("**You can still search the guides by keyword:**")
+        keyword_search()
+else:
+    keyword_search()
 
 # ---------------------------------------------------------------------------
 # Autosave

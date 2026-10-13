@@ -13,7 +13,7 @@ It also includes aftercare guides (spay/neuter, dental, wound, and vaccination) 
 - **Schedule for any day.** Pick a date (it starts on your next available day) to see one time-ordered plan across all your pets, filterable by pet or status, with total and remaining minutes.
 - **Ask PawsCare+ (AI).** Ask an aftercare question like "my dog threw up after her spay, is that normal?" Claude answers in plain language from the guides only, cites the sections it used, and flags anything the guides say needs a vet. Each user gets a daily question limit.
 - **Your vet's instructions.** Paste or upload (PDF) a vet's discharge sheet for each pet. When you ask about that pet, Claude reads its vet instructions first, and they take priority over the general guides. Only the text is saved, never the file.
-- **Keyword search.** A TF-IDF search over the guides in `docs/`, with a confidence check that answers "I'm not so sure" rather than returning a weak match.
+- **Keyword search as a backup.** If the AI helper isn't available (no API key, the daily limit is used up, or an outage), a free TF-IDF keyword search over the guides appears instead, with a confidence check that answers "I'm not so sure" rather than returning a weak match.
 - **Accounts and automatic saving.** Sign in with Google and your pets and tasks are saved to a PostgreSQL database, so they're there next time on any device. Each account only sees its own data.
 - **Your data, your control.** Under **Manage my data**: download a copy as JSON, restore it later (with a confirmation before anything is replaced), start over, or delete everything saved for your account.
 
@@ -141,6 +141,8 @@ The guides are general information, not a vet's review of your pet. The app says
 - *Trade-off:* Priority is more of a label than something that changes the plan. I think that makes sense for pet care: you usually know meds need to happen at 8 AM, and you mainly need help catching conflicts.
 
 **A day plan is a snapshot.** `DayPlan` keeps its own copy of the task list, so sorting or filtering a plan never reorders the owner's master list.
+
+**Graceful degradation.** Ask PawsCare+ is the only search box most people see. If it can't answer (the daily limit is used up, or Claude can't be reached), the keyword search appears in its place, so the user still has a way to find the guidance instead of a dead end.
 
 **Keyword search first, then Claude on top of it (RAG).** The first version used only TF-IDF keyword search: it works offline, needs no API key, and is easy to test, but it only matches words, so "my dog threw up" wouldn't find the section about vomiting. Instead of replacing it, the AI helper reuses the same index to choose which sections to send, then lets Claude connect meaning to the text. Keyword search stays as a free fallback.
 
