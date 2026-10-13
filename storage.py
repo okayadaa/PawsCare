@@ -13,11 +13,13 @@ SQLAlchemy is the library that hides the differences between them.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import (
     Column,
+    Date,
     DateTime,
+    Integer,
     Engine,
     MetaData,
     String,
@@ -41,6 +43,16 @@ owners_table = Table(
     Column("email", String(320), nullable=True),
     Column("data", Text, nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+# How many AI requests each user made per day, so one person can't use up
+# the app's Claude credit. One row per user per day.
+ai_usage_table = Table(
+    "pawpal_ai_usage",
+    metadata,
+    Column("user_id", String(255), primary_key=True),
+    Column("day", Date, primary_key=True),
+    Column("count", Integer, nullable=False),
 )
 
 
@@ -87,6 +99,31 @@ def save_owner(engine: Engine, user_id: str, email: str | None, owner: Owner) ->
 
 
 def delete_owner(engine: Engine, user_id: str) -> None:
-    """Remove everything saved for this user."""
+    """Remove everything saved for this user, including their AI usage counts."""
     with engine.begin() as conn:
         conn.execute(delete(owners_table).where(owners_table.c.user_id == user_id))
+        conn.execute(delete(ai_usage_table).where(ai_usage_table.c.user_id == user_id))
+
+
+def ai_uses_on(engine: Engine, user_id: str, day: date) -> int:
+    """How many AI requests this user has made on this day."""
+    with engine.connect() as conn:
+        count = conn.execute(
+            select(ai_usage_table.c.count).where(
+                ai_usage_table.c.user_id == user_id, ai_usage_table.c.day == day
+            )
+        ).scalar()
+    return count or 0
+
+
+def record_ai_use(engine: Engine, user_id: str, day: date) -> None:
+    """Add one to this user's AI request count for the day."""
+    match = (ai_usage_table.c.user_id == user_id) & (ai_usage_table.c.day == day)
+    with engine.begin() as conn:
+        result = conn.execute(
+            update(ai_usage_table)
+            .where(match)
+            .values(count=ai_usage_table.c.count + 1)
+        )
+        if result.rowcount == 0:
+            conn.execute(insert(ai_usage_table).values(user_id=user_id, day=day, count=1))

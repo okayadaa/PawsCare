@@ -27,7 +27,15 @@ from pawpal_system import (
     parse_task_time,
     search_aftercare,
 )
-from storage import delete_owner, load_owner, make_engine, save_owner
+import ai
+from storage import (
+    ai_uses_on,
+    delete_owner,
+    load_owner,
+    make_engine,
+    record_ai_use,
+    save_owner,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 DOCS_DIR = APP_DIR / "docs"
@@ -54,6 +62,14 @@ def get_engine(database_url: str):
     # cache_resource keeps ONE database connection pool for the whole app,
     # shared by every visitor, instead of reconnecting on every click.
     return make_engine(database_url)
+
+
+@st.cache_resource
+def get_ai_client(api_key: str):
+    # One Claude client for the whole app, like the database engine.
+    import anthropic
+
+    return anthropic.Anthropic(api_key=api_key, max_retries=2, timeout=30.0)
 
 
 def has_secret_section(name: str) -> bool:
@@ -107,6 +123,17 @@ def reset_owner_widgets() -> None:
         st.session_state.pop(key, None)
 
 
+def show_sources(sections) -> None:
+    """List each guide's references once, under the sections shown."""
+    seen: list[str] = []
+    for section in sections:
+        for source in section.sources:
+            if source not in seen:
+                seen.append(source)
+    if seen:
+        st.caption("Sources: " + " · ".join(seen))
+
+
 def show_header() -> None:
     logo_col, title_col = st.columns([1, 8], vertical_alignment="center")
     with logo_col:
@@ -157,6 +184,13 @@ database_url = (
     if has_secret_section("database")
     else LOCAL_DATABASE_URL
 )
+
+# Claude is optional: without an [anthropic] section in secrets, the AI
+# helper is hidden and the keyword search still works.
+ai_settings = st.secrets["anthropic"] if has_secret_section("anthropic") else {}
+AI_ENABLED = bool(ai_settings.get("api_key"))
+AI_MODEL = ai_settings.get("model", ai.DEFAULT_MODEL)
+AI_DAILY_LIMIT = int(ai_settings.get("daily_limit", 20))
 
 # ---------------------------------------------------------------------------
 # Load this user's saved data once per visit
@@ -498,31 +532,108 @@ st.divider()
 
 st.subheader("Aftercare guides")
 st.caption(
-    "Search the built-in guides for spay/neuter, dental, wound, and vaccination "
-    "aftercare. This is general information, not a substitute for your vet."
+    "General guides for spay/neuter, dental, wound, and vaccination aftercare, "
+    "checked against the veterinary sources listed with each answer. Always "
+    "follow your own vet's instructions first."
 )
 
-doc_query = st.text_input(
-    "What do you want to know?",
-    placeholder="e.g. incision care, vomiting, bandage",
-    key="doc_search_query",
-)
+doc_index = _cached_doc_index(str(DOCS_DIR), _docs_cache_key(DOCS_DIR))
 
-if doc_query.strip():
-    doc_index = _cached_doc_index(str(DOCS_DIR), _docs_cache_key(DOCS_DIR))
-    response = search_aftercare(doc_query, DOCS_DIR, top_k=5, index=doc_index)
-    if not response.confident:
-        st.warning(
-            "I'm not so sure. I couldn't find that topic in the aftercare guides. "
-            "If you're worried about your pet, call your vet."
+if AI_ENABLED:
+    ask_tab, search_tab = st.tabs(["Ask PawsCare+", "Search by keyword"])
+else:
+    ask_tab, search_tab = None, st.container()
+
+if ask_tab is not None:
+    with ask_tab:
+        with st.form("ask_form"):
+            question = st.text_area(
+                "Ask about your pet's aftercare",
+                max_chars=ai.MAX_QUESTION_CHARS,
+                placeholder="e.g. My dog threw up the day after her spay surgery. Is that normal?",
+            )
+            asked = st.form_submit_button("Ask", type="primary")
+
+        if asked:
+            try:
+                used = ai_uses_on(get_engine(database_url), user_id, today)
+            except SQLAlchemyError as exc:
+                print(f"AI usage check failed: {exc!r}")
+                st.error("Couldn't check your question limit right now. Please try again.")
+            else:
+                if used >= AI_DAILY_LIMIT:
+                    st.warning(
+                        f"You've used all {AI_DAILY_LIMIT} questions for today. "
+                        "Try again tomorrow, or use the keyword search."
+                    )
+                else:
+                    try:
+                        with st.spinner("Reading the guides..."):
+                            result = ai.ask_aftercare(
+                                get_ai_client(ai_settings["api_key"]),
+                                question,
+                                doc_index,
+                                model=AI_MODEL,
+                            )
+                    except ValueError as exc:
+                        st.warning(str(exc))
+                    except ai.AIError as exc:
+                        print(f"AI request failed: {exc!r}")  # visible in app logs
+                        st.error(
+                            "The AI helper isn't available right now. Please try "
+                            "again in a minute, or use the keyword search."
+                        )
+                    else:
+                        record_ai_use(get_engine(database_url), user_id, today)
+                        st.session_state.ai_answer = (question.strip(), result)
+
+        if "ai_answer" in st.session_state:
+            asked_question, result = st.session_state.ai_answer
+            if result.call_vet:
+                st.error("**Call your vet now.** What you described is something the guides say needs a vet.")
+            if result.covered:
+                st.info(result.answer)
+                with st.expander("Where this answer comes from"):
+                    for section in result.sources:
+                        st.markdown(f"**{section.doc_title} > {section.heading}**")
+                        st.markdown(section.content)
+                    show_sources(result.sources)
+            else:
+                st.warning(result.answer)
+
+        try:
+            left = max(0, AI_DAILY_LIMIT - ai_uses_on(get_engine(database_url), user_id, today))
+        except SQLAlchemyError:
+            left = None
+        st.caption(
+            ("" if left is None else f"{left} of {AI_DAILY_LIMIT} questions left today. ")
+            + "Answers are written by AI (Claude) using only the guides above, "
+            "and can be wrong. They're not veterinary advice. If you're worried, "
+            "call your vet."
         )
-    else:
-        for match in response.matches:
-            section = match.section
-            st.markdown(f"**From:** {section.doc_title or section.source_file}")
-            st.markdown(f"### {section.heading}")
-            st.markdown(section.content)
-            st.divider()
+
+with search_tab:
+    doc_query = st.text_input(
+        "Search the guides by keyword",
+        placeholder="e.g. incision care, vomiting, bandage",
+        key="doc_search_query",
+    )
+
+    if doc_query.strip():
+        response = search_aftercare(doc_query, DOCS_DIR, top_k=5, index=doc_index)
+        if not response.confident:
+            st.warning(
+                "I'm not so sure. I couldn't find that topic in the aftercare guides. "
+                "If you're worried about your pet, call your vet."
+            )
+        else:
+            for match in response.matches:
+                section = match.section
+                st.markdown(f"**From:** {section.doc_title or section.source_file}")
+                st.markdown(f"### {section.heading}")
+                st.markdown(section.content)
+                show_sources([section])
+                st.divider()
 
 # ---------------------------------------------------------------------------
 # Autosave

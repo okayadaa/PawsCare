@@ -72,3 +72,35 @@ def test_data_survives_reconnecting(tmp_path):
 
     # A brand-new connection, like the app restarting.
     assert load_owner(make_engine(url), "user-1").pets[0].name == "Mochi"
+
+
+def test_ai_usage_counts_per_user_per_day(engine):
+    from datetime import date, timedelta
+
+    from storage import ai_uses_on, record_ai_use
+
+    today = date(2026, 10, 13)
+    assert ai_uses_on(engine, "user-1", today) == 0
+
+    record_ai_use(engine, "user-1", today)
+    record_ai_use(engine, "user-1", today)
+    record_ai_use(engine, "user-2", today)
+    record_ai_use(engine, "user-1", today + timedelta(days=1))
+
+    assert ai_uses_on(engine, "user-1", today) == 2
+    assert ai_uses_on(engine, "user-2", today) == 1
+    assert ai_uses_on(engine, "user-1", today + timedelta(days=1)) == 1
+
+
+def test_delete_owner_also_clears_ai_usage(engine):
+    from datetime import date
+
+    from storage import ai_uses_on, record_ai_use
+
+    today = date(2026, 10, 13)
+    save_owner(engine, "user-1", None, _sample_owner())
+    record_ai_use(engine, "user-1", today)
+
+    delete_owner(engine, "user-1")
+
+    assert ai_uses_on(engine, "user-1", today) == 0

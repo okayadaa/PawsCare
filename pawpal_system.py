@@ -366,6 +366,12 @@ class DocSection:
     heading: str
     content: str
     doc_title: str = ""
+    # The guide's references, from its "## Sources" section, as markdown
+    # list items like "[Title](https://...), Publisher".
+    sources: list[str] = field(default_factory=list)
+
+
+SOURCES_HEADING = "sources"
 
 
 def normalize_doc_heading(text: str) -> str:
@@ -376,41 +382,47 @@ def normalize_doc_heading(text: str) -> str:
 
 
 def load_aftercare_sections(docs_dir: Path | str) -> list[DocSection]:
+    """Split each guide into its "## " sections.
+
+    A "## Sources" section isn't treated as guide content: its list items
+    are attached to every section of that guide as ``sources``, so answers
+    can show where the guidance comes from without the reference list
+    itself being searched or sent to Claude as advice.
+    """
     sections: list[DocSection] = []
     docs_path = Path(docs_dir)
 
     for md_file in sorted(docs_path.glob("*.md")):
-        current_heading: str | None = None
-        current_original: str | None = None
-        current_lines: list[str] = []
         doc_title = ""
+        parsed: list[tuple[str, list[str]]] = []  # (heading, lines)
 
         for line in md_file.read_text(encoding="utf-8").splitlines():
             if line.startswith("# ") and not line.startswith("## "):
                 doc_title = line[2:].strip()
             elif line.startswith("## "):
-                if current_heading is not None and current_original is not None:
-                    sections.append(
-                        DocSection(
-                            source_file=md_file.name,
-                            heading=current_original,
-                            content="\n".join(current_lines).strip(),
-                            doc_title=doc_title,
-                        )
-                    )
-                current_original = line[3:].strip()
-                current_heading = normalize_doc_heading(current_original)
-                current_lines = []
-            elif current_heading is not None:
-                current_lines.append(line)
+                parsed.append((line[3:].strip(), []))
+            elif parsed:
+                parsed[-1][1].append(line)
 
-        if current_heading is not None and current_original is not None:
+        sources: list[str] = []
+        for heading, lines in parsed:
+            if normalize_doc_heading(heading) == SOURCES_HEADING:
+                sources = [
+                    line.strip()[2:].strip()
+                    for line in lines
+                    if line.strip().startswith("- ")
+                ]
+
+        for heading, lines in parsed:
+            if normalize_doc_heading(heading) == SOURCES_HEADING:
+                continue
             sections.append(
                 DocSection(
                     source_file=md_file.name,
-                    heading=current_original,
-                    content="\n".join(current_lines).strip(),
+                    heading=heading,
+                    content="\n".join(lines).strip(),
                     doc_title=doc_title,
+                    sources=list(sources),
                 )
             )
 
@@ -496,10 +508,13 @@ def _query_phrases(query_terms: list[str]) -> list[str]:
 
 
 def _phrase_boost(query_terms: list[str], heading: str) -> float:
-    heading_text = _normalized_text(heading)
+    # Compare against the heading's words with the same filler words removed
+    # as the query, so "call vet" matches "Call the Vet Immediately If".
+    # Spaces around both sides make sure only whole words match.
+    heading_text = f" {' '.join(tokenize(heading))} "
     boost = 0.0
     for phrase in _query_phrases(query_terms):
-        if phrase in heading_text:
+        if f" {phrase} " in heading_text:
             boost += 0.15 * len(phrase.split())
     return boost
 
@@ -590,9 +605,27 @@ class DocSearchIndex:
         return doc_index
 
     def search(self, query: str, top_k: int = 5) -> list[SearchMatch]:
+        scores = self.score_sections(query)
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        matches: list[SearchMatch] = []
+        seen_source_files: set[str] = set()
+
+        for section_idx, score in ranked:
+            section = self.sections[section_idx]
+            if section.source_file in seen_source_files:
+                continue
+            seen_source_files.add(section.source_file)
+            matches.append(SearchMatch(section=section, score=score))
+            if len(matches) >= top_k:
+                break
+
+        return matches
+
+    def score_sections(self, query: str) -> dict[int, float]:
+        """TF-IDF score for every section that shares a word with the query."""
         query_terms = tokenize(query)
         if not query_terms or not self.sections:
-            return []
+            return {}
 
         num_sections = len(self.sections)
         scores: dict[int, float] = {}
@@ -620,20 +653,7 @@ class DocSearchIndex:
                 query_terms, section.source_file, self.file_metadata
             )
 
-        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-        matches: list[SearchMatch] = []
-        seen_source_files: set[str] = set()
-
-        for section_idx, score in ranked:
-            section = self.sections[section_idx]
-            if section.source_file in seen_source_files:
-                continue
-            seen_source_files.add(section.source_file)
-            matches.append(SearchMatch(section=section, score=score))
-            if len(matches) >= top_k:
-                break
-
-        return matches
+        return scores
 
 
 def build_doc_search_index(docs_dir: Path | str = "docs") -> DocSearchIndex:

@@ -585,3 +585,21 @@ def test_load_accepts_older_saves_with_status_field():
     restored = owner_from_dict(data)
 
     assert restored.todos[0].completed_on is None
+
+
+def test_heading_phrase_match_ignores_filler_words():
+    """Regression test: "call vet" didn't match the heading "Call the Vet
+    Immediately If" because of the word "the", so the search lost
+    confidence when the guides were reworded."""
+    response = search_aftercare("call vet bleeding", DOCS_DIR)
+
+    assert response.confident is True
+    assert response.matches[0].section.heading.startswith("Call the Vet")
+
+
+def test_sources_section_is_attached_not_searched():
+    sections = load_aftercare_sections(DOCS_DIR)
+
+    assert all(s.heading.lower() != "sources" for s in sections)
+    assert all(s.sources for s in sections), "every guide should cite sources"
+    assert all(s.startswith("[") and "](https://" in s for sec in sections for s in sec.sources)

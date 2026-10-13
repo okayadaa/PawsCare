@@ -133,3 +133,90 @@ def test_done_then_undo(db_url):
 
     _by_label(at.button, "Undo").click().run()
     assert at.session_state["owner"].todos[0].completed_on is None
+
+
+# --- Ask PawsCare+ (Claude) ---------------------------------------------
+
+
+def _ai_app(db_url, fake, *, api_key, daily_limit=20):
+    """The app with an [anthropic] secret, using a fake Claude client.
+
+    Each test passes its own api_key so Streamlit's cached client from one
+    test isn't reused by another.
+    """
+    at = _app(db_url, auth=False)
+    at.secrets["anthropic"] = {"api_key": api_key, "daily_limit": daily_limit}
+    return at, mock.patch("anthropic.Anthropic", return_value=fake)
+
+
+def _ask(at, question):
+    at.text_area[0].input(question)
+    _by_label(at.button, "Ask").click().run()
+    assert not at.exception, at.exception
+
+
+def test_ai_tab_is_hidden_without_an_api_key(db_url):
+    at = _app(db_url, auth=False).run()
+
+    assert not at.text_area  # no "Ask" box
+    assert any(f.label == "Search the guides by keyword" for f in at.text_input)
+
+
+def test_ask_shows_answer_and_its_sources(db_url):
+    from tests.test_ai import FakeClaude
+
+    fake = FakeClaude(
+        {"covered": True, "answer": "Check the incision twice a day [1].", "source_numbers": [1], "call_vet": False}
+    )
+    at, patch = _ai_app(db_url, fake, api_key="key-answer")
+    with patch:
+        at.run()
+        _ask(at, "How often should I check the incision?")
+
+    assert len(fake.calls) == 1
+    assert any(i.value == "Check the incision twice a day [1]." for i in at.info)
+    assert any(e.label == "Where this answer comes from" for e in at.expander)
+    assert any(c.value.startswith("Sources: [") for c in at.caption)
+    assert any("19 of 20 questions left today" in c.value for c in at.caption)
+
+
+def test_call_vet_answers_show_a_clear_warning(db_url):
+    from tests.test_ai import FakeClaude
+
+    fake = FakeClaude(
+        {"covered": True, "answer": "Repeated vomiting needs a vet [1].", "source_numbers": [1], "call_vet": True}
+    )
+    at, patch = _ai_app(db_url, fake, api_key="key-vet")
+    with patch:
+        at.run()
+        _ask(at, "My dog keeps vomiting after surgery")
+
+    assert any("Call your vet now" in e.value for e in at.error)
+
+
+def test_daily_limit_stops_calls_to_claude(db_url):
+    from tests.test_ai import FakeClaude
+
+    fake = FakeClaude({"covered": False, "answer": "Ask your vet.", "source_numbers": [], "call_vet": False})
+    at, patch = _ai_app(db_url, fake, api_key="key-limit", daily_limit=2)
+    with patch:
+        at.run()
+        _ask(at, "question one")
+        _ask(at, "question two")
+        _ask(at, "question three")
+
+    assert len(fake.calls) == 2  # the third never reached Claude
+    assert any("used all 2 questions" in w.value for w in at.warning)
+
+
+def test_ai_outage_shows_a_friendly_error_and_does_not_count(db_url):
+    from tests.test_ai import FakeClaude
+
+    fake = FakeClaude(error=RuntimeError("503 overloaded"))
+    at, patch = _ai_app(db_url, fake, api_key="key-outage")
+    with patch:
+        at.run()
+        _ask(at, "incision care")
+
+    assert any("isn't available right now" in e.value for e in at.error)
+    assert any("20 of 20 questions left today" in c.value for c in at.caption)
