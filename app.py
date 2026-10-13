@@ -28,6 +28,7 @@ from pawpal_system import (
     search_aftercare,
 )
 import ai
+from documents import extract_pdf_text
 from storage import (
     ai_uses_on,
     delete_owner,
@@ -121,6 +122,11 @@ def reset_owner_widgets() -> None:
     """Clear widget values so they re-read from the newly loaded owner."""
     for key in ("owner_name", "days_preset", "avail_start", "avail_end"):
         st.session_state.pop(key, None)
+
+
+def as_plain(text: str) -> str:
+    """Show user-provided text as-is: Streamlit would turn $...$ into math."""
+    return text.replace("$", "\\$")
 
 
 def show_sources(sections) -> None:
@@ -218,6 +224,7 @@ if st.session_state.get("loaded_user_id") != user_id:
     reset_owner_widgets()
 
 owner: Owner = st.session_state.owner
+today = user_today()
 
 # ---------------------------------------------------------------------------
 # Sidebar: account and data
@@ -387,14 +394,57 @@ with st.form("add_pet", clear_on_submit=True):
             st.success(f"Added {new_pet_name.strip()}.")
 
 if owner.pets:
-    for registered_pet in owner.pets:
+    for pet_index, registered_pet in enumerate(owner.pets):
         st.write(f"- {registered_pet.get_pet_info()}")
+        notes = registered_pet.vet_notes
+        label = f"{registered_pet.name}'s vet instructions" + (f" ({len(notes)})" if notes else "")
+        with st.expander(label):
+            st.caption(
+                "Add instructions from your vet, like a discharge sheet after "
+                "surgery. Ask PawsCare+ will use them when you ask about "
+                f"{registered_pet.name}, ahead of the general guides. Only the "
+                "text is saved with your account, never the file, and "
+                "\"Delete my data\" removes it."
+            )
+            for note_index, note in enumerate(notes):
+                note_col, delete_col = st.columns([5, 1])
+                with note_col:
+                    st.markdown(f"**{note.title}** · added {note.added_on:%b} {note.added_on.day}")
+                    preview = note.text[:160] + ("…" if len(note.text) > 160 else "")
+                    st.caption(as_plain(preview))
+                with delete_col:
+                    if st.button("Delete", key=f"delete_note_{pet_index}_{note_index}"):
+                        registered_pet.remove_vet_note(note)
+                        st.rerun()
+
+            with st.form(f"add_note_{pet_index}", clear_on_submit=True):
+                note_title = st.text_input(
+                    "Title", placeholder="e.g. Spay surgery discharge, Oct 13"
+                )
+                pasted = st.text_area("Paste the instructions", height=120)
+                pdf = st.file_uploader(
+                    "…or upload a PDF", type="pdf", max_upload_size=2,
+                    key=f"note_pdf_{pet_index}",
+                )
+                if st.form_submit_button("Save instructions"):
+                    try:
+                        if pdf is not None and pasted.strip():
+                            raise ValueError("Please either paste text or upload a PDF, not both.")
+                        if pdf is not None:
+                            text = extract_pdf_text(pdf.getvalue())
+                            title = note_title or pdf.name.rsplit(".", 1)[0]
+                        else:
+                            text, title = pasted, note_title
+                        registered_pet.add_vet_note(title, text, today)
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success(f"Saved {registered_pet.name}'s vet instructions.")
+                        st.rerun()
 else:
     st.info("No pets yet. Add one above.")
 
 st.divider()
-
-today = user_today()
 
 st.subheader("Daily tasks")
 st.caption(
@@ -547,6 +597,15 @@ else:
 if ask_tab is not None:
     with ask_tab:
         with st.form("ask_form"):
+            pet_choices = [None] + list(range(len(owner.pets)))
+            asked_about = st.selectbox(
+                "Which pet is this about?",
+                pet_choices,
+                format_func=lambda i: "No specific pet (general guides only)"
+                if i is None
+                else owner.pets[i].name
+                + (" (has vet instructions)" if owner.pets[i].vet_notes else ""),
+            )
             question = st.text_area(
                 "Ask about your pet's aftercare",
                 max_chars=ai.MAX_QUESTION_CHARS,
@@ -567,6 +626,7 @@ if ask_tab is not None:
                         "Try again tomorrow, or use the keyword search."
                     )
                 else:
+                    pet = owner.pets[asked_about] if asked_about is not None else None
                     try:
                         with st.spinner("Reading the guides..."):
                             result = ai.ask_aftercare(
@@ -574,6 +634,8 @@ if ask_tab is not None:
                                 question,
                                 doc_index,
                                 model=AI_MODEL,
+                                pet_name=pet.name if pet else None,
+                                vet_notes=pet.vet_notes if pet else None,
                             )
                     except ValueError as exc:
                         st.warning(str(exc))
@@ -595,8 +657,9 @@ if ask_tab is not None:
                 st.info(result.answer)
                 with st.expander("Where this answer comes from"):
                     for section in result.sources:
-                        st.markdown(f"**{section.doc_title} > {section.heading}**")
-                        st.markdown(section.content)
+                        marker = "🩺 " if section.from_vet else ""
+                        st.markdown(f"**{marker}{section.doc_title} > {as_plain(section.heading)}**")
+                        st.markdown(as_plain(section.content) if section.from_vet else section.content)
                     show_sources(result.sources)
             else:
                 st.warning(result.answer)

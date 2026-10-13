@@ -12,6 +12,7 @@ It also includes aftercare guides (spay/neuter, dental, wound, and vaccination) 
 - **Guardrails.** A task is rejected if it starts before or ends after your available hours, or overlaps another task, with a message explaining what's wrong.
 - **Schedule for any day.** Pick a date (it starts on your next available day) to see one time-ordered plan across all your pets, filterable by pet or status, with total and remaining minutes.
 - **Ask PawsCare+ (AI).** Ask an aftercare question like "my dog threw up after her spay, is that normal?" Claude answers in plain language from the guides only, cites the sections it used, and flags anything the guides say needs a vet. Each user gets a daily question limit.
+- **Your vet's instructions.** Paste or upload (PDF) a vet's discharge sheet for each pet. When you ask about that pet, Claude reads its vet instructions first, and they take priority over the general guides. Only the text is saved, never the file.
 - **Keyword search.** A TF-IDF search over the guides in `docs/`, with a confidence check that answers "I'm not so sure" rather than returning a weak match.
 - **Accounts and automatic saving.** Sign in with Google and your pets and tasks are saved to a PostgreSQL database, so they're there next time on any device. Each account only sees its own data.
 - **Your data, your control.** Under **Manage my data**: download a copy as JSON, restore it later (with a confirmation before anything is replaced), start over, or delete everything saved for your account.
@@ -104,7 +105,7 @@ flowchart TB
 
 **Scheduling.** The app (`app.py`) collects pets, tasks, and availability and passes them to the `Owner` and `Scheduler` classes in `pawpal_system.py`. Before a task is added, guardrails check that it fits inside the owner's available hours and doesn't overlap another task. Generating a schedule produces a `DayPlan`, a time-sorted snapshot of the day's tasks.
 
-**Aftercare guides.** There are two ways in. *Keyword search*: a TF-IDF retriever searches the markdown files in `docs/`, and an evaluator checks whether the best match is strong enough; if it isn't, the app says "I'm not so sure" instead of guessing. *Ask PawsCare+*: `ai.py` uses retrieval-augmented generation (RAG). It ranks guide sections with the same TF-IDF index, sends the most relevant ones (today, all of them fit) to Claude with the question, and asks for a structured reply: the answer, whether the guides cover it, which numbered sections it used, and whether to call the vet. The app shows the answer next to those exact sections so the user can check it.
+**Aftercare guides.** There are two ways in. *Keyword search*: a TF-IDF retriever searches the markdown files in `docs/`, and an evaluator checks whether the best match is strong enough; if it isn't, the app says "I'm not so sure" instead of guessing. *Ask PawsCare+*: `ai.py` uses retrieval-augmented generation (RAG). If the question is about a pet with saved vet instructions, those are sent first, labeled as the pet's own vet instructions, and Claude is told they win if they disagree with the general guides. It ranks guide sections with the same TF-IDF index, sends the most relevant ones (today, all of them fit) to Claude with the question, and asks for a structured reply: the answer, whether the guides cover it, which numbered sections it used, and whether to call the vet. The app shows the answer next to those exact sections so the user can check it.
 
 **Accounts and saving.** Users sign in with Google through Streamlit's built-in `st.login()`. Google gives each account a permanent ID, and `storage.py` uses it as the key for that user's row in a `pawpal_owners` table. The row's `data` column holds their owner, pets, and tasks as JSON (made by `owner_to_dict`). After every click, the app compares the current data to what it last saved and writes to the database only if something changed.
 
@@ -147,6 +148,12 @@ The guides are general information, not a vet's review of your pet. The app says
 
 - *Trade-off:* Answers can only be as good as four short guides. That's intentional: an honest "the guides don't cover this, ask your vet" is better than a confident guess about a pet's health.
 
+**The pet's own vet comes first.** General guides are written for every pet; a discharge sheet is written for this one, with the real medication, dose, and dates. So when both are available, the vet's instructions are sent first, clearly labeled, and the prompt says they take priority. Uploaded text is treated as information, never as instructions to Claude, in case a document contains something like "ignore your rules."
+
+**Store text, not files.** `documents.py` pulls the text out of a PDF (up to 2 MB and 10 pages) and the file is thrown away. Discharge sheets often include the owner's address and phone number in the letterhead, and the app has no need to keep that. The text is stored with the pet in the user's row, so it's included in "Download a copy" and removed by "Delete my data." Scanned PDFs have no text to pull out; the app says so and asks the user to paste the text instead.
+
+- *Trade-off:* No photo uploads yet. Many vets hand out paper, so reading a photo with Claude's vision would be a useful next step, at a slightly higher cost per upload.
+
 **A daily AI limit per user.** Each user gets 20 questions a day (configurable), counted in a `pawpal_ai_usage` table. Failed requests don't count. This keeps one person from using up the app's Claude credit. Claude Haiku 4.5 costs well under a cent per question here, so the limit is about protection, not price.
 
 **One JSON row per user instead of separate tables.** Each user's pets and tasks are stored together as one JSON document rather than in separate `pets` and `tasks` tables. A user only ever loads and saves their own data as a whole, so this keeps the database code small and reuses the same format as the backup file.
@@ -162,7 +169,7 @@ The guides are general information, not a vet's review of your pet. The app says
 ## Limitations and next steps
 
 - Every task repeats daily. There are no one-off or limited-time tasks yet (for example, "medication every 12 hours for 7 days").
-- The aftercare guides cover four topics. You can't add your own vet's instructions yet (next up: paste a vet discharge sheet and get suggested tasks).
+- The aftercare guides cover four topics. Your own vet's instructions can be added per pet, but they don't create tasks yet (next up: suggested tasks from a discharge sheet, which you approve).
 - Aftercare guides are general information and not a substitute for advice from a veterinarian.
 
 ## Project files
@@ -172,7 +179,8 @@ The guides are general information, not a vet's review of your pet. The app says
 | `app.py` | Streamlit web app |
 | `pawpal_system.py` | Scheduling, guardrails, aftercare search, JSON save/load |
 | `storage.py` | Database: load, save, and delete each user's data; AI usage counts |
-| `ai.py` | Ask PawsCare+: picks guide sections and asks Claude, grounded in them |
+| `ai.py` | Ask PawsCare+: picks guide sections (and the pet's vet instructions) and asks Claude, grounded in them |
+| `documents.py` | Pulls the text out of uploaded PDFs |
 | `.streamlit/secrets.toml.example` | Template for sign-in and database settings |
 | `main.py` | Command-line demo |
 | `tests/` | Test suite (scheduling, storage, and full-app tests) |

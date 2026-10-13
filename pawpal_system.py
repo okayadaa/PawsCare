@@ -28,11 +28,52 @@ class AvailabilityWindow:
 
 
 @dataclass
+class VetNote:
+    """Instructions from a pet's own vet, such as a discharge sheet.
+
+    Only the text is kept (pasted, or pulled out of a PDF), never the
+    original file.
+    """
+
+    title: str
+    text: str
+    added_on: date
+
+
+MAX_VET_NOTES_PER_PET = 5
+MAX_VET_NOTE_CHARS = 12_000
+
+
+@dataclass
 class PetInfo:
     name: str
     age: int
     breed: str = ""
     species: str = ""
+    vet_notes: list[VetNote] = field(default_factory=list)
+
+    def add_vet_note(self, title: str, text: str, added_on: date) -> VetNote:
+        title = " ".join(title.split()) or "Vet instructions"
+        text = text.strip()
+        if not text:
+            raise ValueError("The vet instructions are empty.")
+        if len(text) > MAX_VET_NOTE_CHARS:
+            raise ValueError(
+                f"That's too long to save ({len(text):,} characters). Please keep "
+                f"it under {MAX_VET_NOTE_CHARS:,}, for example by pasting only "
+                "the aftercare part."
+            )
+        if len(self.vet_notes) >= MAX_VET_NOTES_PER_PET:
+            raise ValueError(
+                f"{self.name} already has {MAX_VET_NOTES_PER_PET} sets of vet "
+                "instructions. Delete an old one first."
+            )
+        note = VetNote(title[:100], text, added_on)
+        self.vet_notes.append(note)
+        return note
+
+    def remove_vet_note(self, note: VetNote) -> None:
+        self.vet_notes = [n for n in self.vet_notes if n is not note]
 
     def get_pet_info(self) -> str:
         details = [part for part in (self.species, self.breed) if part]
@@ -369,6 +410,8 @@ class DocSection:
     # The guide's references, from its "## Sources" section, as markdown
     # list items like "[Title](https://...), Publisher".
     sources: list[str] = field(default_factory=list)
+    # True for text from a pet's own vet (a VetNote), not a general guide.
+    from_vet: bool = False
 
 
 SOURCES_HEADING = "sources"
@@ -731,6 +774,14 @@ def owner_to_dict(owner: Owner) -> dict:
                 "age": pet.age,
                 "breed": pet.breed,
                 "species": pet.species,
+                "vet_notes": [
+                    {
+                        "title": note.title,
+                        "text": note.text,
+                        "added_on": note.added_on.isoformat(),
+                    }
+                    for note in pet.vet_notes
+                ],
             }
             for pet in owner.pets
         ],
@@ -778,6 +829,14 @@ def owner_from_dict(data: dict) -> Owner:
                 int(pet_data["age"]),
                 pet_data.get("breed", ""),
                 pet_data.get("species", ""),
+                [
+                    VetNote(
+                        note["title"],
+                        note["text"],
+                        date.fromisoformat(note["added_on"]),
+                    )
+                    for note in pet_data.get("vet_notes", [])
+                ],
             )
             owner.add_pet(pet)
             pets_by_name[pet.name] = pet

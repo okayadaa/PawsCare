@@ -603,3 +603,60 @@ def test_sources_section_is_attached_not_searched():
     assert all(s.heading.lower() != "sources" for s in sections)
     assert all(s.sources for s in sections), "every guide should cite sources"
     assert all(s.startswith("[") and "](https://" in s for sec in sections for s in sec.sources)
+
+
+# --- Vet instructions on a pet --------------------------------------------
+
+
+def test_add_vet_note_cleans_title_and_text():
+    bella = PetInfo("Bella", 4)
+
+    note = bella.add_vet_note("  Spay   discharge ", "  Carprofen twice daily.  ", MONDAY)
+
+    assert note.title == "Spay discharge"
+    assert note.text == "Carprofen twice daily."
+    assert bella.vet_notes == [note]
+
+
+def test_vet_note_limits():
+    from pawpal_system import MAX_VET_NOTE_CHARS, MAX_VET_NOTES_PER_PET
+
+    bella = PetInfo("Bella", 4)
+    with pytest.raises(ValueError, match="empty"):
+        bella.add_vet_note("Sheet", "   ", MONDAY)
+    with pytest.raises(ValueError, match="too long"):
+        bella.add_vet_note("Sheet", "x" * (MAX_VET_NOTE_CHARS + 1), MONDAY)
+
+    for i in range(MAX_VET_NOTES_PER_PET):
+        bella.add_vet_note(f"Sheet {i}", "text", MONDAY)
+    with pytest.raises(ValueError, match="Delete an old one"):
+        bella.add_vet_note("One more", "text", MONDAY)
+
+
+def test_remove_vet_note():
+    bella = PetInfo("Bella", 4)
+    first = bella.add_vet_note("A", "one", MONDAY)
+    second = bella.add_vet_note("B", "two", MONDAY)
+
+    bella.remove_vet_note(first)
+
+    assert bella.vet_notes == [second]
+
+
+def test_vet_notes_survive_save_and_load():
+    owner = Owner("Ada", _weekday_availability())
+    bella = PetInfo("Bella", 4)
+    owner.add_pet(bella)
+    bella.add_vet_note("Spay discharge", "Cone for 14 days.", MONDAY)
+
+    restored = owner_from_dict(owner_to_dict(owner))
+
+    note = restored.pets[0].vet_notes[0]
+    assert (note.title, note.text, note.added_on) == ("Spay discharge", "Cone for 14 days.", MONDAY)
+
+
+def test_older_saves_without_vet_notes_still_load():
+    data = owner_to_dict(Owner("Ada", _weekday_availability()))
+    data["pets"].append({"name": "Bella", "age": 4, "breed": "", "species": "dog"})
+
+    assert owner_from_dict(data).pets[0].vet_notes == []

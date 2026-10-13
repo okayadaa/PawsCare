@@ -150,7 +150,7 @@ def _ai_app(db_url, fake, *, api_key, daily_limit=20):
 
 
 def _ask(at, question):
-    at.text_area[0].input(question)
+    _by_label(at.text_area, "Ask about your pet's aftercare").input(question)
     _by_label(at.button, "Ask").click().run()
     assert not at.exception, at.exception
 
@@ -158,7 +158,7 @@ def _ask(at, question):
 def test_ai_tab_is_hidden_without_an_api_key(db_url):
     at = _app(db_url, auth=False).run()
 
-    assert not at.text_area  # no "Ask" box
+    assert not any(t.label == "Ask about your pet's aftercare" for t in at.text_area)
     assert any(f.label == "Search the guides by keyword" for f in at.text_input)
 
 
@@ -220,3 +220,65 @@ def test_ai_outage_shows_a_friendly_error_and_does_not_count(db_url):
 
     assert any("isn't available right now" in e.value for e in at.error)
     assert any("20 of 20 questions left today" in c.value for c in at.caption)
+
+
+# --- A pet's vet instructions -------------------------------------------
+
+
+def _save_pasted_note(at, title, text):
+    _by_label(at.text_input, "Title").input(title)
+    _by_label(at.text_area, "Paste the instructions").input(text)
+    _by_label(at.button, "Save instructions").click().run()
+    assert not at.exception, at.exception
+
+
+def test_paste_vet_instructions_saves_and_survives_reload(db_url):
+    at = _app(db_url, auth=False).run()
+    _add_pet(at, "Bella")
+
+    _save_pasted_note(at, "Spay discharge", "Keep the cone on for 14 days. Carprofen twice daily.")
+
+    note = at.session_state["owner"].pets[0].vet_notes[0]
+    assert note.title == "Spay discharge"
+    assert any("Bella's vet instructions (1)" == e.label for e in at.expander)
+
+    at = _app(db_url, auth=False).run()  # a new session loads it from the database
+    assert at.session_state["owner"].pets[0].vet_notes[0].text.startswith("Keep the cone")
+
+
+def test_empty_vet_instructions_show_an_error(db_url):
+    at = _app(db_url, auth=False).run()
+    _add_pet(at, "Bella")
+
+    _save_pasted_note(at, "Nothing", "   ")
+
+    assert any("empty" in e.value for e in at.error)
+    assert at.session_state["owner"].pets[0].vet_notes == []
+
+
+def test_delete_vet_instructions(db_url):
+    at = _app(db_url, auth=False).run()
+    _add_pet(at, "Bella")
+    _save_pasted_note(at, "Spay discharge", "Cone for 14 days.")
+
+    _by_label(at.button, "Delete").click().run()  # the only Delete button: no tasks yet
+
+    assert at.session_state["owner"].pets[0].vet_notes == []
+
+
+def test_asking_about_a_pet_sends_its_vet_instructions(db_url):
+    from tests.test_ai import FakeClaude
+
+    fake = FakeClaude({"covered": True, "answer": "14 days.", "source_numbers": [1], "call_vet": False})
+    at, patch = _ai_app(db_url, fake, api_key="key-vet-notes")
+    with patch:
+        at.run()
+        _add_pet(at, "Bella")
+        _save_pasted_note(at, "Spay discharge", "Keep the cone on for 14 days.")
+        _by_label(at.selectbox, "Which pet is this about?").select(0).run()  # Bella
+        _ask(at, "How long does the cone stay on?")
+
+    message = fake.calls[0]["messages"][0]["content"]
+    assert "VET INSTRUCTIONS: Bella's vet instructions" in message
+    assert "Keep the cone on for 14 days." in message
+    assert any(e.label == "Where this answer comes from" for e in at.expander)
